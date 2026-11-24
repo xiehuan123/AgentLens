@@ -1,5 +1,15 @@
 
 const en = {
+  "未命名会话":"Untitled session",
+  "无项目":"No project",
+  "目录设置":"Log folders",
+  "工具名称":"Tool name",
+  "调用参数":"Call arguments",
+  "原始参数文本":"Original argument text",
+  "脚本或文本参数":"Script or text argument",
+  "日志未记录参数":"No arguments recorded",
+  "参数":"Arguments",
+  "没有记录工具输出":"No tool output recorded",
   "修复构建类型错误": "Fix a build type error",
   "修复配置解析失败": "Fix config parsing",
   "归档": "Archived",
@@ -72,7 +82,18 @@ const en = {
 let language = localStorage.getItem('agentlens.language') ?? (navigator.language.startsWith('zh') ? 'zh' : 'en');
 const t = text => language==='en' ? en[text]??text : text;
 const number = n => n.toLocaleString(language==='en'?'en':'zh-CN');
-const timestamp = date => date.toLocaleString(language==='en'?'en':'zh-CN');
+const locale = () => language==='en'?'en':'zh-CN';
+function readableTime(value, compact=false) {
+  if(value==null || value==='')return '';
+  const date=value instanceof Date?value:new Date(value);
+  if(!Number.isFinite(date.getTime()))return String(value);
+  const time={hour:'2-digit',minute:'2-digit',hourCycle:'h23'};
+  if(compact && date.toDateString()===new Date().toDateString())return date.toLocaleTimeString(locale(),time);
+  return date.toLocaleString(locale(),{...time,year:compact?undefined:'numeric',month:'short',day:'numeric',second:compact?undefined:'2-digit'});
+}
+const sessionTitle = source => source.title ? (local?source.title:t(source.title)) : t('未命名会话');
+const groupOpen = new Map();
+let sessionDrawKey = '';
 function applyLanguage(){
   document.documentElement.lang=language==='en'?'en':'zh-CN';
   $('language').textContent=language==='en'?'中文':'English';
@@ -111,18 +132,46 @@ function goBottom() { $('timeline').scrollTop=$('timeline').scrollHeight; displa
 function stop() {clearInterval(display.timer);display.timer=null;}
 function sessions() {
   const container=$('sessions');
+  const sourceFilter=$('provider').value;
+  const query=$('project').value.trim().toLowerCase();
+  const all=local ? localSessions : sources;
+  const drawKey=JSON.stringify([language,local,localKey,display.active,sourceFilter,query,all]);
+  if(drawKey===sessionDrawKey)return;
+  sessionDrawKey=drawKey;
   container.replaceChildren();
-  (local ? localSessions : sources).forEach((source,i) => {
-    if (($('provider').value && $('provider').value!==source.provider) ||
-      !source.project.toLowerCase().includes($('project').value.trim().toLowerCase())) return;
-    const button=node('button',undefined,'session');
-    button.setAttribute('aria-pressed',String(local ? source.key===localKey : i===display.active));
-    button.append(node('span',source.provider+' · '+(source.archived?t('归档'):local ? timestamp(new Date(source.modified*1000)) : source.time),'source'),node('strong',local?source.title:t(source.title)),node('small',source.project));
-    button.onclick=()=>{if(local){void selectLocal(source.key);return;}stop();Object.assign(display,{active:i,selected:4,file:null,failed:false,unseen:0});render();goBottom();};
-    container.append(button);
+  const groups=new Map();
+  all.forEach((source,i)=>{
+    const project=source.project || t('无项目');
+    if((sourceFilter && sourceFilter!==source.provider) ||
+      ![project,sessionTitle(source)].some(value=>value.toLowerCase().includes(query)))return;
+    const key=source.project_key??source.project;
+    if(!groups.has(key))groups.set(key,{project,order:source.project_order,entries:[]});
+    groups.get(key).entries.push([source,i]);
   });
+  const ordered=[...groups].sort(([,a],[,b])=>(a.order??Infinity)-(b.order??Infinity));
+  for(const [key,{project,entries}] of ordered){
+    const group=node('details',undefined,'project-group');
+    group.open=Boolean(query) || (groupOpen.get(key)??true);
+    group.ontoggle=()=>{if(!query)groupOpen.set(key,group.open);};
+    const heading=node('summary');
+    const name=node('strong',project);name.title=project;
+    heading.append(name,node('small',number(entries.length)));
+    group.append(heading);
+    for(const [source,i] of entries){
+      const button=node('button',undefined,'session');
+      const current=local ? source.key===localKey : i===display.active;
+      button.setAttribute('aria-pressed',String(current));
+      const title=node('strong',sessionTitle(source));title.title=title.textContent;
+      const time=local && source.modified ? readableTime(new Date(source.modified*1000),true) : source.time;
+      button.append(title,node('span',[source.provider,source.archived?t('归档'):null,time].filter(Boolean).join(' · '),'source'));
+      button.onclick=()=>{if(local){void selectLocal(source.key);return;}stop();Object.assign(display,{active:i,selected:4,file:null,failed:false,unseen:0});render();goBottom();};
+      group.append(button);
+    }
+    container.append(group);
+  }
   if(!container.children.length)container.append(node('p',t('未找到匹配的会话'),'empty'));
 }
+
 function showStep(id) {
   display.selected=id;display.failed=false;display.file=null;
   render();
@@ -133,6 +182,29 @@ function showStep(id) {
 }
 function section(label,content,open=false) {
   const e=node('details',undefined,'section');e.open=open;e.append(node('summary',label),node('pre',content));return e;
+}
+function argumentDetails(raw) {
+  let parsed;
+  try { parsed=JSON.parse(raw); } catch { /* The log can contain a script or plain text. */ }
+  if(!parsed || typeof parsed!=='object' || Array.isArray(parsed))
+    return section(t('脚本或文本参数'),raw,true);
+
+  const details=node('details',undefined,'section');
+  details.open=true;
+  const entries=Object.entries(parsed);
+  details.append(node('summary',t('调用参数')+' · '+number(entries.length)));
+  const fields=node('dl',undefined,'argument-fields');
+  for(const [key,value] of entries){
+    const field=node('div');
+    const body=typeof value==='string'?value:JSON.stringify(value,null,2);
+    const label=node('dt',key);
+    const data=node('dd');
+    data.append(node('pre',body));
+    field.append(label,data);
+    fields.append(field);
+  }
+  details.append(fields,section(t('原始参数文本'),raw));
+  return details;
 }
 const stepPaths=step=>step.paths?.length ? step.paths : step.path ? [step.path] : [];
 function details(steps) {
@@ -154,12 +226,19 @@ function details(steps) {
     actions.append(filter);
   }
   pane.append(actions);
-  if(step.time)pane.append(node('small',step.time));
+  if(step.time)pane.append(node('small',readableTime(step.time),'step-time'));
   if(step.cwd)pane.append(section(t('工作目录'),step.cwd));
-  if(step.args)pane.append(section(t('原始参数'),step.args));
+  if(step.tool) {
+    const tool=node('p',undefined,'tool-name');
+    tool.append(node('span',t('工具名称')+' '),node('code',step.tool));
+    pane.append(tool);
+  }
+  if(step.args!=null)pane.append(argumentDetails(step.args));
+  else if(step.tool)pane.append(node('p',t('日志未记录参数'),'muted tool-name'));
   if(step.command)pane.append(section(t('命令'),step.command,true));
   if(step.exit!=null)pane.append(node('p',t('退出码')+' '+step.exit,step.exit===0?'ok':'fail'));
-  if(step.output)pane.append(section(t('工具输出'),step.output,step.state==='失败'));
+  if(step.output!=null)pane.append(section(t('工具输出'),step.output,step.state==='失败'));
+  else if(step.tool && !['等待结果','未记录结果'].includes(step.state))pane.append(node('p',t('没有记录工具输出'),'muted tool-name'));
   if(step.patch)pane.append(section(t('补丁'),step.patch,true));
   if(step.content)pane.append(section(step.kind==='消息'?t('消息'):t('读取结果'),step.content,true));
   if(step.child && local){
@@ -195,8 +274,8 @@ let detailKey='';
 function render() {
   const source=local ? localSessions.find(session=>session.key===localKey) : sources[display.active];
   const steps=rows(), done=!local && counts[display.active]===logs[display.active].length;
-  $('title').textContent=source?(local?source.title:t(source.title)):t('本机会话');
-  $('meta').textContent=source ? source.provider+' / '+source.project+' · '+(language==='en' ? number(steps.length)+' records' : number(steps.length)+' 条记录')+(local?'':' · '+t(done?'演示结束':display.timer?'正在播放':'可继续演示')) : t('从左侧选择一个会话');
+  $('title').textContent=source?(sessionTitle(source)):t('本机会话');
+  $('meta').textContent=source ? source.provider+' / '+(source.project||t('无项目'))+' · '+(language==='en' ? number(steps.length)+' records' : number(steps.length)+' 条记录')+(local?'':' · '+t(done?'演示结束':display.timer?'正在播放':'可继续演示')) : t('从左侧选择一个会话');
   if(local && localModel) $('meta').textContent+=' · '+localModel;
   if(local && localKey) $('meta').textContent+=' · '+(lastUpdate?t('最近更新')+' '+lastUpdate.toLocaleTimeString(language==='en'?'en':'zh-CN'):t('暂无新记录'));
   $('folders').hidden=!local;
@@ -230,7 +309,7 @@ function render() {
         e.onclick=()=>{display.selected=step.id;render();$(e.id)?.focus({preventScroll:true});};
         const stateClass=({失败:'fail',成功:'ok',等待结果:'wait'})[step.state]??'';
         const label=node('span');
-        label.append(node('strong',step.title==null?t('未知记录'):step.kind==='结果'||step.title==='未知工具'?t(step.title):step.title),node('small',t(step.kind)));
+        label.append(node('strong',step.title==null?t('未知记录'):step.kind==='结果'||step.title==='未知工具'?t(step.title):step.title),node('small',[t(step.kind),step.args!=null?t('参数'):null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
         e.append(node('span',t(step.kind)[0],'icon'),label,node('span',t(step.state),'state '+stateClass));
         e.setAttribute('aria-pressed',String(step.id===display.selected));
         group.append(e);
@@ -340,7 +419,7 @@ setInterval(async()=>{
     }
     if(listTick++%4===0){
       localSessions=await invoke('local_sessions');
-      if(local)sessions();
+      if(local)render();
     }
   } catch(error) {
     if(local && selection===generation)$('meta').textContent=String(error);

@@ -7,3 +7,31 @@ main{min-width:0;display:flex;flex-direction:column;position:relative;overflow:h
 @media(max-width:880px){.layout{grid-template-columns:175px minmax(0,1fr) 245px}.side,.detail,.top,.scroll{padding-left:12px;padding-right:12px}}
 @media(max-width:650px){.header-note{display:none}.layout{display:block;height:auto}.side,.detail{border:0}.side{max-height:265px}.scroll{height:360px;flex:auto}.detail{min-height:220px}.jump{bottom:12px}}
 #usage{margin-top:20px;border-top:1px solid var(--line);padding-top:12px}#usage dl{display:grid;grid-template-columns:1fr auto;gap:5px;margin:9px 0}#usage dd{margin:0;font-variant-numeric:tabular-nums}
+
+/* Projects and their sessions share a compact, collapsible sidebar. */
+.layout{grid-template-columns:258px minmax(0,1fr) minmax(295px,.65fr)}
+.side{background:#fafafe;padding:16px 12px}
+.side>h2,.side>.filters{margin-left:5px;margin-right:5px}
+.side .filters input,.side .filters select{height:34px}
+.side .filters select{appearance:none;padding-right:24px;background:white linear-gradient(45deg,transparent 50%,#676d7d 50%) calc(100% - 12px) 14px/5px 5px no-repeat}
+.folder-settings{margin:0 5px 12px;color:var(--muted);font-size:12px}
+.folder-settings>summary{cursor:pointer;padding:4px 0}
+.folder-settings button{width:100%;margin:4px 0;text-align:left}
+.project-group{margin:4px 0 12px}
+.project-group>summary{cursor:pointer;display:grid;grid-template-columns:12px minmax(0,1fr) auto;align-items:center;gap:6px;list-style:none;padding:6px 7px;color:#484b60;font-size:12px}
+.project-group>summary::-webkit-details-marker{display:none}
+.project-group>summary::before{content:'›';color:var(--muted);font-size:15px}
+.project-group[open]>summary::before{transform:rotate(90deg)}
+.project-group>summary strong,.session strong,.session .source{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session{width:calc(100% - 12px);margin:2px 0 2px 12px;border-color:transparent;background:transparent;padding:6px 8px;gap:1px}
+.session:hover{background:#f2f1f9;border-color:transparent}
+.session[aria-pressed=true]{border-color:transparent;background:#eae7fd}
+.session strong{display:block;font-size:13px}
+.step-time{display:block;margin-top:8px}
+.tool-name{margin:10px 0;font-size:12px}
+.argument-fields{margin:10px 0}
+.argument-fields>div{margin:8px 0}
+.argument-fields dt{font:600 12px/1.5 ui-monospace,monospace}
+.argument-fields dd{margin:0}
+.argument-fields pre{margin:4px 0}
+@media(max-width:880px){.layout{grid-template-columns:195px minmax(0,1fr) 245px}}

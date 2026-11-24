@@ -37,6 +37,8 @@ pub struct Session {
     key: String,
     provider: &'static str,
     project: String,
+    project_key: String,
+    project_order: Option<usize>,
     title: String,
     modified: u64,
     archived: bool,
@@ -68,13 +70,17 @@ fn walk(
     }
 }
 
+fn codex_home(home: &Path) -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"))
+}
+
 fn roots() -> Vec<(PathBuf, Provider, bool)> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
-    let codex = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".codex"));
+    let codex = codex_home(&home);
     let claude = std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".claude"));
@@ -116,7 +122,89 @@ fn project_hint(path: &Path, provider: Provider) -> Option<String> {
         })
 }
 
+struct DesktopMetadata {
+    titles: BTreeMap<String, String>,
+    state: Value,
+}
+
+impl DesktopMetadata {
+    fn read(home: &Path) -> Self {
+        let mut titles = BTreeMap::new();
+        if let Ok(file) = File::open(home.join("session_index.jsonl")) {
+            for line in BufReader::new(file).split(b'\n').map_while(Result::ok) {
+                if let Ok(row) = serde_json::from_slice::<Value>(&line) {
+                    if let (Some(id), Some(title)) =
+                        (row["id"].as_str(), row["thread_name"].as_str())
+                    {
+                        if !title.trim().is_empty() {
+                            titles.insert(id.to_owned(), title.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+        let state = File::open(home.join(".codex-global-state.json"))
+            .ok()
+            .and_then(|file| serde_json::from_reader(BufReader::new(file)).ok())
+            .unwrap_or_default();
+        Self { titles, state }
+    }
+
+    fn project(&self, id: &str, cwd: &Path) -> Option<(&str, &str, Option<usize>)> {
+        let projects = self.state["local-projects"].as_object()?;
+        let assigned = self.state["thread-project-assignments"][id]["projectId"].as_str();
+        let (key, project) = if let Some(entry) = assigned.and_then(|id| projects.get_key_value(id))
+        {
+            entry
+        } else {
+            projects
+                .iter()
+                .filter_map(|entry| {
+                    let depth = entry.1["rootPaths"]
+                        .as_array()?
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(Path::new)
+                        .filter(|root| root.is_absolute() && cwd.starts_with(root))
+                        .map(|root| root.components().count())
+                        .max()?;
+                    Some((depth, entry))
+                })
+                .max_by_key(|(depth, _)| *depth)?
+                .1
+        };
+        let position = self.state["project-order"]
+            .as_array()
+            .and_then(|order| order.iter().position(|item| item.as_str() == Some(key)));
+        Some((key, project["name"].as_str()?, position))
+    }
+
+    fn projectless(&self, id: &str) -> bool {
+        self.state["projectless-thread-ids"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|value| value.as_str() == Some(id)))
+    }
+}
+
+fn rollout_id(stem: &str) -> Option<&str> {
+    let id = stem.get(stem.len().checked_sub(36)?..)?;
+    id.bytes()
+        .enumerate()
+        .all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+        .then_some(id)
+}
+
 pub fn list(db: &Connection, extra: &[(PathBuf, Provider)]) -> Vec<Session> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let desktop = DesktopMetadata::read(&codex_home(&home));
     let mut result = Vec::new();
     let mut catalog = BTreeMap::new();
     if let Ok(mut query) = db.prepare("SELECT path,cwd,modified,provider,archived FROM catalog") {
@@ -161,20 +249,45 @@ pub fn list(db: &Connection, extra: &[(PathBuf, Provider)]) -> Vec<Session> {
     }
     for (key, (cwd, modified, provider, archived)) in catalog {
         let path = Path::new(&key);
-        let project = Some(cwd.as_str())
-            .filter(|cwd| !cwd.is_empty())
-            .and_then(|cwd| Path::new(cwd).file_name())
-            .or_else(|| path.parent().and_then(Path::file_name))
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        let id = if provider == Provider::Codex {
+            rollout_id(stem).unwrap_or_default()
+        } else {
+            ""
+        };
+        let project_path = if cwd.is_empty() && provider == Provider::Claude {
+            path.parent().unwrap_or_else(|| Path::new(""))
+        } else {
+            Path::new(&cwd)
+        };
+        let mut project_key = project_path.to_string_lossy().into_owned();
+        let mut project = project_path
+            .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let title = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let mut project_order = None;
+        let title = if provider == Provider::Codex {
+            if desktop.projectless(id) {
+                project_key.clear();
+                project.clear();
+            } else if let Some((key, name, position)) = desktop.project(id, project_path) {
+                project_key = format!("codex-project:{key}");
+                project = name.to_owned();
+                project_order = position;
+            }
+            desktop.titles.get(id).cloned().unwrap_or_default()
+        } else {
+            stem.chars().take(8).collect()
+        };
         result.push(Session {
             key,
             provider: provider.name(),
             project,
+            project_key,
+            project_order,
             title,
             modified,
             archived,
@@ -678,6 +791,33 @@ fn timeline(events: &[Value]) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_desktop_projects_prefer_explicit_assignment() {
+        let id = "01a20db3-0000-7000-8000-000000000000";
+        let metadata = DesktopMetadata {
+            titles: BTreeMap::new(),
+            state: json!({
+                "thread-project-assignments": { (id): {"projectId":"assigned"} },
+                "local-projects": {
+                    "assigned":{"name":"Assigned project","rootPaths":["/elsewhere"]},
+                    "nested":{"name":"Nested","rootPaths":["/workspace/project"]},
+                    "outer":{"name":"Outer","rootPaths":["/workspace"]}
+                },
+                "project-order":["outer","assigned","nested"]
+            }),
+        };
+        let stem = format!("rollout-2026-11-24T21-16-07-{id}");
+        assert_eq!(rollout_id(&stem), Some(id));
+        assert_eq!(
+            metadata.project(id, Path::new("/workspace/project")),
+            Some(("assigned", "Assigned project", Some(1)))
+        );
+        assert_eq!(
+            metadata.project("", Path::new("/workspace/project")),
+            Some(("nested", "Nested", Some(2)))
+        );
+    }
 
     #[test]
     fn codex_pairs_result_without_changing_output() {
