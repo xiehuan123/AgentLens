@@ -109,9 +109,9 @@ function readableTime(value, compact=false) {
   if(value==null || value==='')return '';
   const date=value instanceof Date?value:new Date(value);
   if(!Number.isFinite(date.getTime()))return String(value);
-  const time={hour:'2-digit',minute:'2-digit',hourCycle:'h23'};
+  const time={hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'};
   if(compact && date.toDateString()===new Date().toDateString())return date.toLocaleTimeString(locale(),time);
-  return date.toLocaleString(locale(),{...time,year:compact?undefined:'numeric',month:'short',day:'numeric',second:compact?undefined:'2-digit'});
+  return date.toLocaleString(locale(),{...time,year:compact?undefined:'numeric',month:'short',day:'numeric'});
 }
 const sessionTitle = source => source.title ? (local?source.title:t(source.title)) : t('未命名会话');
 const groupOpen = new Map();
@@ -147,12 +147,35 @@ const node = (tag, value, cls) => {const e=document.createElement(tag); if(value
 const importedChat = () => local && localKey?.startsWith('chatgpt-export:');
 const stepKind = step => step.role==='user'?t('用户'):step.role==='assistant'?t('助手'):t(step.kind);
 const rows = () => local ? localSteps : replay(logs[display.active], counts[display.active]);
-const atBottom = () => $('timeline').scrollHeight-$('timeline').scrollTop-$('timeline').clientHeight<=12;
+const atTop = () => $('timeline').scrollTop<=12;
+function latestPosition(){
+  const timeline=$('timeline');
+  timeline.scrollTop=importedChat()?timeline.scrollHeight:0;
+  display.unseen=0;
+  updateJump();
+}
+function timelineAnchor(){
+  const timeline=$('timeline');
+  const top=timeline.getBoundingClientRect().top;
+  for(const entry of timeline.querySelectorAll('.round > summary, .step')){
+    const rect=entry.getBoundingClientRect();
+    if(rect.height && rect.bottom>top){
+      return {id:entry.id,round:entry.parentElement.dataset.round,offset:rect.top-top};
+    }
+  }
+  return null;
+}
+function restoreAnchor(anchor){
+  if(!anchor)return;
+  const timeline=$('timeline');
+  const group=[...timeline.querySelectorAll('.round')].find(entry=>entry.dataset.round===anchor.round);
+  const entry=(anchor.id && $(anchor.id)) || group?.firstElementChild;
+  if(entry)timeline.scrollTop+=entry.getBoundingClientRect().top-timeline.getBoundingClientRect().top-anchor.offset;
+}
 function updateJump() {
   $('jump').hidden=!display.unseen;
-  $('jump').textContent=language==='en' ? number(display.unseen)+' new steps ↓' : '有 '+number(display.unseen)+' 个新步骤 ↓';
+  $('jump').textContent=language==='en' ? number(display.unseen)+' new steps ↑' : '有 '+number(display.unseen)+' 个新步骤 ↑';
 }
-function goBottom() { $('timeline').scrollTop=$('timeline').scrollHeight; display.unseen=0; updateJump(); }
 function stop() {clearInterval(display.timer);display.timer=null;}
 function sessions() {
   const container=$('sessions');
@@ -188,7 +211,7 @@ function sessions() {
       const title=node('strong',sessionTitle(source));title.title=title.textContent;
       const time=local && source.modified ? readableTime(new Date(source.modified*1000),true) : source.time;
       button.append(title,node('span',[source.provider,source.archived?t('归档'):null,time].filter(Boolean).join(' · '),'source'));
-      button.onclick=()=>{if(local){void selectLocal(source.key);return;}stop();Object.assign(display,{active:i,selected:4,file:null,failed:false,unseen:0});render();goBottom();};
+      button.onclick=()=>{if(local){void selectLocal(source.key);return;}stop();Object.assign(display,{active:i,selected:4,file:null,failed:false,unseen:0});render();latestPosition();};
       group.append(button);
     }
     container.append(group);
@@ -292,7 +315,7 @@ function renderFilters(steps){
   for(const [category,name] of filters){
     const button=node('button',t(name)+' '+number(counts[category]??0));
     button.setAttribute('aria-pressed',String(display.category===category));
-    button.onclick=()=>{display.category=category;display.file=null;render();};
+    button.onclick=()=>{display.category=category;display.file=null;render();latestPosition();};
     bar.append(button);
   }
 }
@@ -373,6 +396,12 @@ function details(steps) {
   }
 }
 let detailKey='';
+function visibleSteps(steps){
+  return steps.filter(step=>{
+    const category=labelStep(step).category;
+    return (importedChat() || display.category==='all' || (display.category==='activity' && category!=='event') || category===display.category);
+  }).filter(step=>(!display.failed || step.state==='失败') && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
+}
 function render() {
   const source=local ? localSessions.find(session=>session.key===localKey) : sources[display.active];
   const steps=rows(), done=!local && counts[display.active]===logs[display.active].length;
@@ -393,10 +422,7 @@ function render() {
   sessions();
   const container=$('steps');
   renderFilters(steps);
-  const visible=steps.filter(step=>{
-    const category=labelStep(step).category;
-    return (importedChat() || display.category==='all' || (display.category==='activity' && category!=='event') || category===display.category);
-  }).filter(step=>(!display.failed || step.state==='失败') && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
+  const visible=visibleSteps(steps);
   const openRounds = new Map([...container.querySelectorAll('details')].map(e=>[e.dataset.round,e.open]));
   const rounds = new Map();
   for(const step of visible) {
@@ -409,7 +435,9 @@ function render() {
     container.dataset.drawKey=drawKey;
     container.replaceChildren();
     const latest=[...rounds.keys()].at(-1);
-    for(const [round, entries] of rounds){
+    const groups=[...rounds];
+    if(!importedChat())groups.reverse();
+    for(const [round, entries] of groups){
       const group=node('details',undefined,'round');
       group.dataset.round=round;
       group.open=openRounds.get(round)??(!local || round===latest || entries.some(step=>step.id===display.selected));
@@ -420,7 +448,7 @@ function render() {
       const failureCount=entries.filter(step=>step.state==='失败').length;
       summary.append(label,node('small',number(entries.length)+' '+t('步骤')+(failureCount?' · '+number(failureCount)+' '+t('失败数'):'')));
       group.append(summary);
-      for(const step of entries){
+      for(const step of importedChat()?entries:[...entries].reverse()){
         const e=node('button',undefined,'step');
         e.id='step-'+step.id;
         e.onclick=()=>{display.selected=step.id;render();$(e.id)?.focus({preventScroll:true});};
@@ -462,20 +490,22 @@ function render() {
 function advance(){
   const index=display.active, record=logs[index][counts[index]];
   if(!record)return;
-  const follow=atBottom();
+  const follow=atTop();
+  const anchor=follow?null:timelineAnchor();
+  const before=visibleSteps(rows()).length;
   counts[index]++;
-  if(!follow && !record.target)display.unseen++;
+  if(!follow)display.unseen+=Math.max(0,visibleSteps(rows()).length-before);
   if(counts[index]===logs[index].length)stop();
-  render();if(follow)goBottom();
+  render();if(follow)latestPosition();else restoreAnchor(anchor);
 }
 $('project').oninput=sessions;$('provider').onchange=sessions;
 $('next').onclick=advance;
 $('play').onclick=()=>{if(display.timer)stop();else display.timer=setInterval(advance,1100);render();};
-$('reset').onclick=()=>{stop();counts[display.active]=initialCount;Object.assign(display,{selected:4,file:null,failed:false,unseen:0});render();goBottom();};
+$('reset').onclick=()=>{stop();counts[display.active]=initialCount;Object.assign(display,{selected:4,file:null,failed:false,unseen:0});render();latestPosition();};
 $('failed').onclick=()=>{display.failed=!display.failed;display.file=null;render();};
 $('file').onclick=()=>{display.file=null;render();};
-$('jump').onclick=goBottom;
-$('timeline').addEventListener('scroll',()=>{if(atBottom()&&display.unseen){display.unseen=0;updateJump();}});
+$('jump').onclick=latestPosition;
+$('timeline').addEventListener('scroll',()=>{if(!importedChat()&&atTop()&&display.unseen){display.unseen=0;updateJump();}});
 async function selectLocal(key) {
   const generation=++selection;
   localKey=key;
@@ -488,7 +518,7 @@ async function selectLocal(key) {
     if(!local || selection!==generation)return;
     localSteps=session.steps;eventCount=session.eventCount;localUsage=session.usage;localModel=session.model;
     render();
-    goBottom();
+    latestPosition();
   } catch(error) {
     if(local && selection===generation)$('meta').textContent=String(error);
   } finally { if(selection===generation)loading=false; }
@@ -567,12 +597,13 @@ setInterval(async()=>{
       const session=await invoke('read_session',{key});
       if(!local || selection!==generation)return;
       if(session.eventCount!==eventCount || JSON.stringify(session.steps)!==JSON.stringify(localSteps)){
-        const follow=atBottom();
-        const added=Math.max(0,session.steps.length-localSteps.length);
+        const follow=atTop();
+        const anchor=follow?null:timelineAnchor();
+        const added=Math.max(0,visibleSteps(session.steps).length-visibleSteps(localSteps).length);
         eventCount=session.eventCount;localSteps=session.steps;localUsage=session.usage;localModel=session.model;lastUpdate=new Date();
         if(!follow)display.unseen+=added;
         render();
-        if(follow)goBottom();
+        if(follow)latestPosition();else restoreAnchor(anchor);
       }
     }
     if(listTick++%4===0){

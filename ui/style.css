@@ -54,3 +54,7 @@ main{min-width:0;display:flex;flex-direction:column;position:relative;overflow:h
 .icon.mcp{background:#e5edfb;color:#355caa}
 .icon.event{background:#f0f0f4;color:#616477}
 .event-description{margin:10px 0;color:var(--muted);font-size:13px}
+
+.timeline-panel{position:relative;display:flex;flex:1;min-height:0;min-width:0}
+.timeline-panel>.scroll{overflow-anchor:none}
+.timeline-panel>.jump{top:12px;bottom:auto}
