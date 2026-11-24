@@ -1,11 +1,9 @@
 mod logs;
 mod store;
 
-use std::{path::PathBuf, sync::Mutex};
-use tauri::{Manager, State};
-
-#[derive(Default)]
-struct LogFolders(Mutex<Vec<(PathBuf, logs::Provider)>>);
+use std::path::PathBuf;
+use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 
 fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -19,33 +17,54 @@ fn demo_records(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn local_sessions(
-    app: tauri::AppHandle,
-    folders: State<'_, LogFolders>,
-) -> Result<Vec<logs::Session>, String> {
-    let extra = folders.0.lock().map_err(|e| e.to_string())?.clone();
-    let db = logs::open(&data_dir(&app)?.join("sessions.sqlite3"))?;
-    Ok(logs::list(&db, &extra))
+async fn local_sessions(app: tauri::AppHandle) -> Result<Vec<logs::Session>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = logs::open(&data_dir(&app)?.join("sessions.sqlite3"))?;
+        Ok(logs::list(&db, &logs::folders(&db)?))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn read_session(
-    app: tauri::AppHandle,
-    folders: State<'_, LogFolders>,
-    key: String,
-) -> Result<serde_json::Value, String> {
-    let extra = folders.0.lock().map_err(|e| e.to_string())?.clone();
-    let mut db = logs::open(&data_dir(&app)?.join("sessions.sqlite3"))?;
-    logs::session(&mut db, &key, &extra)
+async fn read_session(app: tauri::AppHandle, key: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut db = logs::open(&data_dir(&app)?.join("sessions.sqlite3"))?;
+        let folders = logs::folders(&db)?;
+        logs::session(&mut db, &key, &folders)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn choose_folder(app: tauri::AppHandle, provider: String) -> Result<bool, String> {
+    let provider = logs::Provider::from_name(&provider).ok_or("Unknown provider")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(folder) = app.dialog().file().blocking_pick_folder() else {
+            return Ok(false);
+        };
+        let folder = folder
+            .into_path()
+            .map_err(|e| e.to_string())?
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
+        let db = logs::open(&data_dir(&app)?.join("sessions.sqlite3"))?;
+        logs::add_folder(&db, &folder, provider)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn main() {
     tauri::Builder::default()
-        .manage(LogFolders::default())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             demo_records,
             local_sessions,
-            read_session
+            read_session,
+            choose_folder
         ])
         .run(tauri::generate_context!())
         .expect("could not start AgentLens");

@@ -16,7 +16,15 @@ pub enum Provider {
 }
 
 impl Provider {
-    fn name(self) -> &'static str {
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value {
+            "Codex" => Some(Self::Codex),
+            "Claude Code" => Some(Self::Claude),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
         match self {
             Self::Codex => "Codex",
             Self::Claude => "Claude Code",
@@ -303,6 +311,35 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
         .map_err(|e| e.to_string())?;
     migrate(&db)?;
     Ok(db)
+}
+
+pub fn folders(db: &Connection) -> Result<Vec<(PathBuf, Provider)>, String> {
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS folders (path TEXT PRIMARY KEY, provider TEXT NOT NULL);",
+    )
+    .map_err(|e| e.to_string())?;
+    let mut query = db
+        .prepare("SELECT path, provider FROM folders")
+        .map_err(|e| e.to_string())?;
+    let rows = query
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let folders = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(folders
+        .into_iter()
+        .filter_map(|(path, name)| Some((PathBuf::from(path), Provider::from_name(&name)?)))
+        .collect())
+}
+
+pub fn add_folder(db: &Connection, path: &Path, provider: Provider) -> Result<(), String> {
+    folders(db)?;
+    db.execute("INSERT INTO folders VALUES (?1,?2) ON CONFLICT(path) DO UPDATE SET provider=excluded.provider",
+        params![path.to_string_lossy().as_ref(),provider.name()]).map_err(|e|e.to_string())?;
+    Ok(())
 }
 
 pub fn session(

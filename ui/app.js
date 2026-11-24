@@ -11,6 +11,7 @@ function replay(records, count) {
 const $ = id => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 let localSessions = [], localSteps = [], localKey = null, local = false;
+let loading = false, refreshing = false, eventCount = null, lastUpdate = null, listTick = 0, selection = 0;
 const display = {active:0, selected:4, failed:false, file:null, unseen:0, timer:null};
 const initialCount = 7;
 const counts = sources.map(() => initialCount);
@@ -76,6 +77,8 @@ function render() {
   const steps=rows(), done=!local && counts[display.active]===logs[display.active].length;
   $('title').textContent=source?.title??'本机会话';
   $('meta').textContent=source ? source.provider+' / '+source.project+' · '+steps.length+' 条记录'+(local?'':' · '+(done?'演示结束':display.timer?'正在播放':'可继续演示')) : '从左侧选择一个会话';
+  if(local && localKey) $('meta').textContent+=' · '+(lastUpdate?'最近更新 '+lastUpdate.toLocaleTimeString():'暂无新记录');
+  $('folders').hidden=!local;
   for(const id of ['play','next','reset'])$(id).hidden=local;
   $('play').textContent=display.timer?'暂停播放':'播放后续日志';
   $('play').disabled=done;$('next').disabled=done;
@@ -137,23 +140,26 @@ $('file').onclick=()=>{display.file=null;render();};
 $('jump').onclick=goBottom;
 $('timeline').addEventListener('scroll',()=>{if(atBottom()&&display.unseen){display.unseen=0;updateJump();}});
 async function selectLocal(key) {
+  const generation=++selection;
   localKey=key;
   localSteps=[];
+  eventCount=null;lastUpdate=null;loading=true;
   Object.assign(display,{selected:null,file:null,failed:false,unseen:0});
   render();
   try {
     const session=await invoke('read_session',{key});
-    if(!local || localKey!==key)return;
-    localSteps=session.steps;
+    if(!local || selection!==generation)return;
+    localSteps=session.steps;eventCount=session.eventCount;
     render();
     goBottom();
   } catch(error) {
-    if(local && localKey===key)$('meta').textContent=String(error);
-  }
+    if(local && selection===generation)$('meta').textContent=String(error);
+  } finally { if(selection===generation)loading=false; }
 }
 $('mode').onclick=async()=>{
   stop();
   local=!local;
+  selection++;loading=false;eventCount=null;lastUpdate=null;listTick=0;
   localKey=null;
   localSteps=[];
   Object.assign(display,{selected:local?null:4,file:null,failed:false,unseen:0});
@@ -167,6 +173,42 @@ $('mode').onclick=async()=>{
     if(local)render();
   } catch(error) { if(local)$('meta').textContent=String(error); }
 };
+async function addFolder(provider) {
+  try {
+    if(await invoke('choose_folder',{provider})) {
+      localSessions=await invoke('local_sessions');
+      if(local)render();
+    }
+  } catch(error) { if(local)$('meta').textContent=String(error); }
+}
+$('codex-folder').onclick=()=>void addFolder('Codex');
+$('claude-folder').onclick=()=>void addFolder('Claude Code');
+setInterval(async()=>{
+  if(!local || refreshing || loading)return;
+  refreshing=true;
+  const generation=selection;
+  const key=localKey;
+  try {
+    if(key) {
+      const session=await invoke('read_session',{key});
+      if(!local || selection!==generation)return;
+      if(session.eventCount!==eventCount || JSON.stringify(session.steps)!==JSON.stringify(localSteps)){
+        const follow=atBottom();
+        const added=Math.max(0,session.steps.length-localSteps.length);
+        eventCount=session.eventCount;localSteps=session.steps;lastUpdate=new Date();
+        if(!follow)display.unseen+=added;
+        render();
+        if(follow)goBottom();
+      }
+    }
+    if(listTick++%4===0){
+      localSessions=await invoke('local_sessions');
+      if(local)sessions();
+    }
+  } catch(error) {
+    if(local && selection===generation)$('meta').textContent=String(error);
+  } finally { refreshing=false; }
+},700);
 $('mode').disabled=true;
 invoke('demo_records').then(records=>{
   logs=records;
