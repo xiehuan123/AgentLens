@@ -1,3 +1,5 @@
+pub mod chatgpt;
+
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -293,6 +295,7 @@ pub fn list(db: &Connection, extra: &[(PathBuf, Provider)]) -> Vec<Session> {
             archived,
         });
     }
+    result.extend(chatgpt::list(db).unwrap_or_default());
     result.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.key.cmp(&b.key)));
     result
 }
@@ -583,9 +586,10 @@ fn migrate(db: &Connection) -> Result<(), String> {
       path TEXT PRIMARY KEY, cwd TEXT NOT NULL, modified INTEGER NOT NULL,
       provider TEXT NOT NULL, archived INTEGER NOT NULL
     );
-    PRAGMA user_version = 3;",
+    PRAGMA user_version = 4;",
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    chatgpt::migrate(db).map_err(|e| e.to_string())
 }
 
 pub fn open(db_path: &Path) -> Result<Connection, String> {
@@ -630,6 +634,9 @@ pub fn session(
     key: &str,
     extra: &[(PathBuf, Provider)],
 ) -> Result<Value, String> {
+    if let Some(chat) = chatgpt::session(db, key)? {
+        return Ok(chat);
+    }
     let path = Path::new(key);
     let permitted = files(extra);
     if let Some(&(provider, _)) = permitted.get(path) {

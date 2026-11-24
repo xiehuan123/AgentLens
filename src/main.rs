@@ -57,6 +57,28 @@ async fn choose_folder(app: tauri::AppHandle, provider: String) -> Result<bool, 
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn import_chatgpt(app: tauri::AppHandle) -> Result<Option<usize>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(files) = app
+            .dialog()
+            .file()
+            .add_filter("ChatGPT JSON", &["json"])
+            .blocking_pick_files()
+        else {
+            return Ok(None);
+        };
+        let paths = files
+            .into_iter()
+            .map(|file| file.into_path().map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut db = logs::open(&data_dir(&app)?.join("sessions.sqlite3"))?;
+        logs::chatgpt::import(&mut db, &paths).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -64,7 +86,8 @@ fn main() {
             demo_records,
             local_sessions,
             read_session,
-            choose_folder
+            choose_folder,
+            import_chatgpt
         ])
         .run(tauri::generate_context!())
         .expect("could not start AgentLens");

@@ -21,3 +21,11 @@ cargo run --locked
 ## 数据位置
 
 AgentLens 只读 Codex 与 Claude Code 源日志。已解析的日志及读取进度保存在 `~/Library/Application Support/dev.agentlens.desktop/sessions.sqlite3`，演示数据使用独立的 `demo.sqlite3`。步骤详情按原始内容存入该数据库，可能包含凭证、源码和个人信息。应用不会上传日志。Token 用量以日志实际字段为准，缺失值标为未知。
+
+## 导入 ChatGPT 桌面聊天
+
+1. 用桌面聊天所用的同一账户在 ChatGPT 设置里申请[数据导出](https://help.openai.com/en/articles/7260999-exporting-your-chatgpt-history-and-data)，下载并解压。
+2. 在 AgentLens 打开「浏览本机会话」→「导入 ChatGPT 聊天」，选择导出中的 `conversations.json` 或编号的会话 JSON 文件。
+3. 在左侧 ChatGPT 分组按标题打开聊天。可以查看导出中当前分支的可见用户与助手文本，以及记录中的时间。重复导入按会话 ID 更新。导入保存在本机 SQLite。
+
+ChatGPT 导入是历史快照。要更新记录，请导入更新的导出文件。普通聊天的实时执行、未导出的工具日志、Token 用量和附件暂不提供。

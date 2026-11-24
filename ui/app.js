@@ -1,5 +1,10 @@
 
 const en = {
+  "导入 ChatGPT 聊天":"Import ChatGPT chats",
+  "导入的聊天记录":"Imported chat history",
+  "正在导入…":"Importing…",
+  "用户":"User",
+  "助手":"Assistant",
   "未命名会话":"Untitled session",
   "无项目":"No project",
   "目录设置":"Log folders",
@@ -122,6 +127,8 @@ const initialCount = 7;
 const counts = sources.map(() => initialCount);
 let logs = [];
 const node = (tag, value, cls) => {const e=document.createElement(tag); if(value!==undefined)e.textContent=value; if(cls)e.className=cls; return e;};
+const importedChat = () => local && localKey?.startsWith('chatgpt-export:');
+const stepKind = step => step.role==='user'?t('用户'):step.role==='assistant'?t('助手'):t(step.kind);
 const rows = () => local ? localSteps : replay(logs[display.active], counts[display.active]);
 const atBottom = () => $('timeline').scrollHeight-$('timeline').scrollTop-$('timeline').clientHeight<=12;
 function updateJump() {
@@ -211,7 +218,7 @@ function details(steps) {
   const pane=$('detail'), step=steps.find(row=>row.id===display.selected);
   pane.replaceChildren(node('small',t('步骤详情')));
   if(!step){pane.append(node('p',t('选择一个工具步骤查看记录。'),'empty'));return;}
-  pane.append(node('h2',step.kind==='事件'||step.kind==='结果'||step.title==='未知工具'?t(step.title):step.title),node('p',t(step.kind)+' · '+t(step.state),step.state==='失败'?'fail':'muted'));
+  pane.append(node('h2',step.kind==='事件'||step.kind==='结果'||step.title==='未知工具'?t(step.title):step.title),node('p',stepKind(step)+' · '+t(step.state),step.state==='失败'?'fail':'muted'));
   const actions=node('div',undefined,'actions');
   if(step.state==='失败') {
     const prior=steps.filter(row=>row.id<step.id && row.kind==='修改');
@@ -277,8 +284,12 @@ function render() {
   $('title').textContent=source?(sessionTitle(source)):t('本机会话');
   $('meta').textContent=source ? source.provider+' / '+(source.project||t('无项目'))+' · '+(language==='en' ? number(steps.length)+' records' : number(steps.length)+' 条记录')+(local?'':' · '+t(done?'演示结束':display.timer?'正在播放':'可继续演示')) : t('从左侧选择一个会话');
   if(local && localModel) $('meta').textContent+=' · '+localModel;
-  if(local && localKey) $('meta').textContent+=' · '+(lastUpdate?t('最近更新')+' '+lastUpdate.toLocaleTimeString(language==='en'?'en':'zh-CN'):t('暂无新记录'));
+  if(importedChat()) $('meta').textContent+=' · '+t('导入的聊天记录');
+  else if(local && localKey) $('meta').textContent+=' · '+(lastUpdate?t('最近更新')+' '+lastUpdate.toLocaleTimeString(language==='en'?'en':'zh-CN'):t('暂无新记录'));
   $('folders').hidden=!local;
+  $('import-chatgpt').hidden=!local;
+  $('import-status').hidden=!local || !$('import-status').textContent;
+  $('failed').hidden=Boolean(importedChat());
   for(const id of ['play','next','reset'])$(id).hidden=local;
   $('play').textContent=t(display.timer?'暂停播放':'播放后续日志');
   $('play').disabled=done;$('next').disabled=done;
@@ -309,8 +320,8 @@ function render() {
         e.onclick=()=>{display.selected=step.id;render();$(e.id)?.focus({preventScroll:true});};
         const stateClass=({失败:'fail',成功:'ok',等待结果:'wait'})[step.state]??'';
         const label=node('span');
-        label.append(node('strong',step.title==null?t('未知记录'):step.kind==='结果'||step.title==='未知工具'?t(step.title):step.title),node('small',[t(step.kind),step.args!=null?t('参数'):null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
-        e.append(node('span',t(step.kind)[0],'icon'),label,node('span',t(step.state),'state '+stateClass));
+        label.append(node('strong',step.title==null?t('未知记录'):step.kind==='结果'||step.title==='未知工具'?t(step.title):step.title),node('small',[stepKind(step),step.args!=null?t('参数'):null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
+        e.append(node('span',stepKind(step)[0],'icon'),label,node('span',t(step.state),'state '+stateClass));
         e.setAttribute('aria-pressed',String(step.id===display.selected));
         group.append(e);
       }
@@ -321,7 +332,7 @@ function render() {
   const key=JSON.stringify([language,localKey,display.active,steps.find(step=>step.id===display.selected)]);
   if(detailKey!==key){detailKey=key;details(steps);}
   const usage=$('usage');
-  usage.hidden=!local || !localKey;
+  usage.hidden=!local || !localKey || Boolean(importedChat());
   usage.replaceChildren(node('h2',t('Token 用量')));
   if(local && localKey){
     const values=localUsage?.values??{};
@@ -397,6 +408,43 @@ async function addFolder(provider) {
     }
   } catch(error) { if(local)$('meta').textContent=String(error); }
 }
+let importCount=null;
+function showImportCount(){
+  if(importCount==null)return;
+  $('import-status').textContent=language==='en'
+    ? 'Processed '+number(importCount)+' ChatGPT conversations.'
+    : '已处理 '+number(importCount)+' 段 ChatGPT 聊天。';
+}
+$('import-chatgpt').onclick=async()=>{
+  const button=$('import-chatgpt'), status=$('import-status');
+  importCount=null;
+  button.disabled=true;
+  status.hidden=false;
+  status.textContent=t('正在导入…');
+  try{
+    const count=await invoke('import_chatgpt');
+    status.textContent='';
+    if(count==null)return;
+    importCount=count;
+    localSessions=await invoke('local_sessions');
+    if(local){
+      $('provider').value='ChatGPT';
+      $('project').value='';
+      showImportCount();
+      if(!importedChat()){
+        const first=localSessions.find(s=>s.provider==='ChatGPT');
+        if(first)await selectLocal(first.key);
+        else render();
+      }
+      else await selectLocal(localKey);
+    }
+  }catch(error){
+    status.textContent=String(error);
+  }finally{
+    status.hidden=!local || !status.textContent;
+    button.disabled=false;
+  }
+};
 $('codex-folder').onclick=()=>void addFolder('Codex');
 $('claude-folder').onclick=()=>void addFolder('Claude Code');
 setInterval(async()=>{
@@ -405,7 +453,7 @@ setInterval(async()=>{
   const generation=selection;
   const key=localKey;
   try {
-    if(key) {
+    if(key && !importedChat()) {
       const session=await invoke('read_session',{key});
       if(!local || selection!==generation)return;
       if(session.eventCount!==eventCount || JSON.stringify(session.steps)!==JSON.stringify(localSteps)){
@@ -429,6 +477,7 @@ $('language').onclick=()=>{
   language=language==='en'?'zh':'en';
   localStorage.setItem('agentlens.language',language);
   applyLanguage();
+  showImportCount();
   if(logs.length)render();
 };
 applyLanguage();

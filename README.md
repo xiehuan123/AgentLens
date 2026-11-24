@@ -38,3 +38,7 @@ node --check ui/app.js
 ```
 
 See the [Chinese guide](docs/zh-CN.md) and [log research](docs/research.md). Licensed under the [MIT License](LICENSE).
+
+## Import ChatGPT desktop chats
+
+Request a [ChatGPT data export](https://help.openai.com/en/articles/7260999-exporting-your-chatgpt-history-and-data) for the account you use on desktop. Extract the ZIP, open **Browse local sessions → Import ChatGPT chats**, then select the conversation JSON file or its numbered parts. AgentLens keeps the current branch's visible text and recorded timestamps in local SQLite. Re-importing updates existing conversation IDs. These imported snapshots have no live feed, attachments, or agent execution telemetry.
