@@ -176,9 +176,30 @@ fn tool(name: &str, id: Option<&str>, input: &Value, key: &str) -> Value {
         _ if command.is_some() => "命令",
         _ => "工具",
     };
-    let patch = (name == "apply_patch").then(|| string(input)).flatten();
+    let patch = if name == "apply_patch" {
+        args["patch"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| string(input))
+    } else {
+        None
+    };
+    let mut paths = path.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    if let Some(patch) = &patch {
+        paths.extend(patch.lines().filter_map(|line| {
+            [
+                "*** Add File: ",
+                "*** Update File: ",
+                "*** Delete File: ",
+                "*** Move to: ",
+            ]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+            .map(str::to_owned)
+        }));
+    }
     json!({"event":"call","call":id,"kind":kind,"title":command.as_deref().unwrap_or(name),"tool":name,
-        "command":command,"path":path,"cwd":args.get("workdir"),"args":string(input),"patch":patch,"key":key})
+        "command":command,"path":paths.first(),"paths":paths,"cwd":args.get("workdir"),"args":string(input),"patch":patch,"key":key})
 }
 
 fn message(role: &str, content: Option<String>) -> Vec<Value> {
@@ -230,6 +251,15 @@ fn codex(record: &Value) -> Vec<Value> {
             vec![
                 json!({"event":"result","call":payload["call_id"],"output":output_text,"exit":exit,
                 "failed":exit.map(|code| code != 0)}),
+            ]
+        }
+        (Some("event_msg"), Some("patch_apply_end")) => {
+            let paths = payload["changes"]
+                .as_object()
+                .map(|changes| changes.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            vec![
+                json!({"event":"result","call":payload["call_id"],"output":payload["stdout"],"failed":payload["success"].as_bool().map(|ok| !ok),"paths":paths}),
             ]
         }
         (Some("event_msg"), Some("task_complete" | "turn_aborted")) => vec![json!({"event":"end"})],
@@ -461,8 +491,11 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                 if let Some(index) = event["call"].as_str().and_then(|id| calls.get(id)).copied() {
                     let step: &mut Value = &mut steps[index];
                     step["state"] = json!(if event["failed"] == true {"失败"} else if event["failed"] == false {"成功"} else {"已记录结果"});
-                    step["output"] = event["output"].clone();
-                    step["exit"] = event["exit"].clone();
+                    if event["paths"].as_array().is_some_and(|paths| !paths.is_empty()) {
+                        step["paths"] = event["paths"].clone();
+                    }
+                    if !event["output"].is_null() { step["output"] = event["output"].clone(); }
+                    if !event["exit"].is_null() { step["exit"] = event["exit"].clone(); }
                 } else {
                     steps.push(json!({"id":steps.len()+1,"round":round,"kind":"结果","title":"未配对的工具结果",
                         "state":"未知","output":event["output"],"exit":event["exit"],"time":event["time"]}));

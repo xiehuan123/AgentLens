@@ -50,6 +50,7 @@ function showStep(id) {
 function section(label,content,open=false) {
   const e=node('details',undefined,'section');e.open=open;e.append(node('summary',label),node('pre',content));return e;
 }
+const stepPaths=step=>step.paths?.length ? step.paths : step.path ? [step.path] : [];
 function details(steps) {
   const pane=$('detail'), step=steps.find(row=>row.id===display.selected);
   pane.replaceChildren(node('small','步骤详情'));
@@ -57,10 +58,17 @@ function details(steps) {
   pane.append(node('h2',step.title),node('p',step.kind+' · '+step.state,step.state==='失败'?'fail':'muted'));
   const actions=node('div',undefined,'actions');
   if(step.state==='失败') {
-    const previous=steps.filter(row=>row.id<step.id && row.kind==='修改' && row.path===step.path).at(-1);
+    const prior=steps.filter(row=>row.id<step.id && row.kind==='修改');
+    const hints=stepPaths(step);
+    const previous=prior.filter(row=>stepPaths(row).some(path=>hints.includes(path) ||
+      step.output?.includes(path) || step.output?.includes(path.replace(/^.*\//,'')))).at(-1) ?? prior.at(-1);
     if(previous){const jump=node('button','查看前一次修改 ↑');jump.onclick=()=>showStep(previous.id);actions.append(jump);}
   }
-  if(step.path){const filter=node('button','查看本轮同文件步骤');filter.onclick=()=>{display.file=step.path;display.failed=false;render();};actions.append(filter);}
+  for(const path of stepPaths(step)){
+    const filter=node('button','查看本轮同文件步骤 · '+path);
+    filter.onclick=()=>{display.file={path,round:step.round??1};display.failed=false;render();};
+    actions.append(filter);
+  }
   pane.append(actions);
   if(step.time)pane.append(node('small',step.time));
   if(step.cwd)pane.append(section('工作目录',step.cwd));
@@ -83,10 +91,10 @@ function render() {
   $('play').textContent=display.timer?'暂停播放':'播放后续日志';
   $('play').disabled=done;$('next').disabled=done;
   $('failed').setAttribute('aria-pressed',String(display.failed));
-  $('file').hidden=!display.file;$('file').textContent=(display.file??'')+' ×';
+  $('file').hidden=!display.file;$('file').textContent=(display.file?.path??'')+' ×';
   sessions();
   const container=$('steps');
-  const visible=steps.filter(step=>(!display.failed || step.state==='失败') && (!display.file || step.path===display.file));
+  const visible=steps.filter(step=>(!display.failed || step.state==='失败') && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
   const openRounds = new Map([...container.querySelectorAll('details')].map(e=>[e.dataset.round,e.open]));
   const rounds = new Map();
   for(const step of visible) {
