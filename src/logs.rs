@@ -385,7 +385,13 @@ fn completed_item(payload: &Value) -> Value {
     let item = &payload["item"];
     let kind = item["type"].as_str().unwrap_or("unknown");
     let call = item["id"].as_str();
-    let failed = match item["status"].as_str() {
+    let status = item["status"].as_str();
+    let duration = &item["duration"];
+    let duration_ms = duration["secs"]
+        .as_u64()
+        .and_then(|secs| secs.checked_mul(1000))
+        .and_then(|ms| ms.checked_add(duration["nanos"].as_u64()? / 1_000_000));
+    let failed = match status {
         Some("failed" | "Failed" | "declined" | "Declined") => Some(true),
         Some("completed" | "Completed") => Some(false),
         _ => None,
@@ -394,12 +400,23 @@ fn completed_item(payload: &Value) -> Value {
         "CommandExecution" => {
             json!({"event":"evidence","call":call,"kind":"命令","tool":"exec_command",
             "command":string(&item["command"]),"cwd":item["cwd"],"output":string(&item["aggregated_output"]),
-            "exit":item["exit_code"],"failed":item["exit_code"].as_i64().map(|code| code!=0).or(failed)})
+            "exit":item["exit_code"],"durationMs":duration_ms,"outcome":status,"failed":item["exit_code"].as_i64().map(|code| code!=0).or(failed)})
+        }
+        "SubAgentActivity" if item["kind"] == "started" && item["agent_thread_id"].is_string() => {
+            json!({"event":"child_link","call":call,"child":item["agent_thread_id"],"agentPath":item["agent_path"]})
+        }
+        "CollabAgentToolCall"
+            if matches!(
+                item["tool"].as_str(),
+                Some("spawn_agent" | "spawnAgent" | "spawn")
+            ) =>
+        {
+            json!({"event":"child_link","call":call,"child":item["receiver_thread_ids"].get(0)})
         }
         "WebSearch" => json!({"event":"evidence","call":call,"kind":"工具","tool":"web_search",
             "args":string(&item["action"]).or_else(|| string(&item["query"])),"network":true}),
         "McpToolCall" => json!({"event":"evidence","call":call,"kind":"工具","tool":item["tool"],
-            "server":item["server"],"args":string(&item["arguments"]),"output":string(&item["result"]),"failed":failed}),
+            "server":item["server"],"args":string(&item["arguments"]),"output":string(&item["result"]),"durationMs":duration_ms,"outcome":status,"failed":failed.or_else(||item["result"]["isError"].as_bool())}),
         _ => json!({"event":"unknown","type":"item_completed","itemType":kind}),
     }
 }
@@ -545,6 +562,11 @@ fn codex(record: &Value) -> Vec<Value> {
         }
         (Some("response_item"), Some("function_call" | "custom_tool_call")) => {
             vec![codex_call(payload)]
+        }
+        (Some("event_msg"), Some("collab_agent_spawn_end")) => {
+            vec![
+                json!({"event":"child_link","call":payload["call_id"],"child":payload["new_thread_id"]}),
+            ]
         }
         (Some("event_msg"), Some("item_completed")) => vec![completed_item(payload)],
         (Some("response_item"), Some("web_search_call")) => {
@@ -770,15 +792,19 @@ pub fn session(
         }
     }
     let mut stmt = db
-        .prepare("SELECT body FROM events WHERE path=?1 ORDER BY ordinal, sub")
+        .prepare("SELECT body, ordinal FROM events WHERE path=?1 ORDER BY ordinal, sub")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([key], |row| row.get::<_, String>(0))
+        .query_map([key], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
         .map_err(|e| e.to_string())?;
     let events = rows
         .map(|row| {
-            let body = row.map_err(|e| e.to_string())?;
-            serde_json::from_str::<Value>(&body).map_err(|e| e.to_string())
+            let (body, offset) = row.map_err(|e| e.to_string())?;
+            let mut event = serde_json::from_str::<Value>(&body).map_err(|e| e.to_string())?;
+            event["sourceOffset"] = json!(offset);
+            Ok::<_, String>(event)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let model = events.iter().rev().find_map(|e| {
@@ -795,7 +821,7 @@ fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), St
     use std::os::unix::fs::MetadataExt;
     let file = File::open(path).map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    let identity = format!("5:{}:{}", metadata.dev(), metadata.ino());
+    let identity = format!("7:{}:{}", metadata.dev(), metadata.ino());
     let key = path.to_string_lossy();
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -878,6 +904,11 @@ fn timeline(events: &[Value]) -> Vec<Value> {
         .filter(|event| event["event"] == "evidence")
         .filter_map(|event| Some((event["call"].as_str()?, event)))
         .collect();
+    let child_links: BTreeMap<_, _> = events
+        .iter()
+        .filter(|event| event["event"] == "child_link" && event["child"].is_string())
+        .filter_map(|event| Some((event["call"].as_str()?, event)))
+        .collect();
     let mut round = 1;
     let mut started = false;
     let mut turn_rounds = BTreeMap::new();
@@ -926,15 +957,16 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                         step["paths"] = event["paths"].clone();
                     }
                     if matches!(step["tool"].as_str(), Some("spawn_agent" | "Agent" | "Task")) && event["child"].is_string() {
-                        step["child"] = event["child"].clone();
+                        if step["child"].is_null() { step["child"] = event["child"].clone(); }
                     }
                     if !event["output"].is_null() { step["output"] = event["output"].clone(); }
+                    step["resultOffset"] = event["sourceOffset"].clone();
                     for field in ["exit", "reason", "errorCode"] {
                         if !event[field].is_null() { step[field] = event[field].clone(); }
                     }
                 } else {
                     steps.push(json!({"id":steps.len()+1,"round":event_round,"kind":"结果","title":"未配对的工具结果",
-                        "state":"未知","call":event["call"],"turnId":event["turnId"],"reason":event["reason"],"errorCode":event["errorCode"],"output":event["output"],"exit":event["exit"],"time":event["time"]}));
+                        "state":"未知","sourceOffset":event["sourceOffset"],"call":event["call"],"turnId":event["turnId"],"reason":event["reason"],"errorCode":event["errorCode"],"output":event["output"],"exit":event["exit"],"time":event["time"]}));
                 }
             }
             Some("evidence") if event["call"].as_str().is_some_and(|id|call_ids.contains(id) || calls.contains_key(id)) => (),
@@ -948,10 +980,15 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                 }
                 let source = if let Some(call) = event["call"].as_str() {
                     calls.insert(call,steps.len());
+                    if let Some(link) = child_links.get(call) {
+                        step["child"] = link["child"].clone();
+                        step["agentPath"] = link["agentPath"].clone();
+                    }
                     evidence.get(call).copied()
                 } else if event["event"] == "evidence" { Some(event) } else { None };
                 if let Some(source) = source {
-                    for field in ["command","cwd","server","exit","output","args","network"] {
+                    step["resultOffset"] = source["sourceOffset"].clone();
+                    for field in ["command","cwd","server","exit","output","args","network","durationMs","outcome"] {
                         if !source[field].is_null() && (field != "args" || step[field].is_null()) {
                             step[field] = source[field].clone();
                         }
@@ -1043,6 +1080,29 @@ mod tests {
         assert_eq!(steps[4]["durationMs"], 876);
         assert_eq!(steps[6]["round"], 2);
         assert_eq!(steps[6]["reason"], "Connection closed");
+    }
+
+    #[test]
+    fn codex_spawn_pairs_structured_activity_by_call_id() {
+        let records = [
+            json!({"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{}"}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1",
+                "output":"{\"task_name\":\"/root/research\"}"}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","item":{
+                "type":"SubAgentActivity","kind":"started","id":"other-call","agent_thread_id":"other-thread"
+            }}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","item":{
+                "type":"SubAgentActivity","kind":"started","id":"spawn-1","agent_thread_id":"child-thread","agent_path":"/root/research"
+            }}}),
+        ];
+        let events = records
+            .iter()
+            .flat_map(|record| parse(Provider::Codex, record))
+            .collect::<Vec<_>>();
+        let steps = timeline(&events);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0]["child"], "child-thread");
+        assert_eq!(steps[0]["agentPath"], "/root/research");
     }
 
     #[test]

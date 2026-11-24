@@ -79,6 +79,32 @@ async fn import_chatgpt(app: tauri::AppHandle) -> Result<Option<usize>, String> 
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn save_diagnostics(app: tauri::AppHandle, markdown: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(file) = app
+            .dialog()
+            .file()
+            .add_filter("Markdown", &["md"])
+            .set_file_name("agentlens-diagnostics.md")
+            .blocking_save_file()
+        else {
+            return Ok(false);
+        };
+        let path = file.into_path().map_err(|e| e.to_string())?;
+        if !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            return Err("Choose a .md file for the diagnostic report.".into());
+        }
+        std::fs::write(path, markdown).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -87,7 +113,8 @@ fn main() {
             local_sessions,
             read_session,
             choose_folder,
-            import_chatgpt
+            import_chatgpt,
+            save_diagnostics
         ])
         .run(tauri::generate_context!())
         .expect("could not start AgentLens");

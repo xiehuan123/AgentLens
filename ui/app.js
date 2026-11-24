@@ -1,5 +1,67 @@
 
 const en = {
+  "请选择日志目录":"Choose a log folder",
+  "已添加日志目录":"Log folder added",
+  "无法添加日志目录":"Could not add log folder",
+  "子智能体 ID":"Subagent ID",
+  "子会话":"Child session",
+  "子智能体路径":"Subagent path",
+  "关联子会话日志尚未找到":"Linked child log is not available yet",
+  "日志未记录可关联的子会话 ID":"No linkable child session ID was recorded",
+  "刷新子会话":"Refresh child session",
+  "打开子会话":"Open child session",
+  "请求":"Requests",
+  "模型请求与响应记录":"Model request and response records",
+  "外部请求线索":"External request evidence",
+  "HTTP 方法":"HTTP method",
+  "已记录 HTTP 状态码":"Recorded HTTP status",
+  "已记录目标":"Recorded targets",
+  "日志未记录目标":"No target recorded",
+  "这是日志记录的操作或入参。网络状态、响应码和请求完成情况以日志证据为准。":"This shows a recorded action or input. Network status, response codes and completion require explicit log evidence.",
+  "源日志偏移":"Source log byte offset",
+  "结果日志偏移":"Result log byte offset",
+  "已拒绝":"Declined",
+  "排查会话":"Inspect session",
+  "关闭":"Close",
+  "失败排查":"Failures",
+  "改动与验证":"Changes & checks",
+  "Skills 与 MCP":"Skills & MCP",
+  "导出排查包":"Export report",
+  "选择任务轮次":"Select a turn",
+  "选取失败步骤":"Select a failed step",
+  "未记录失败步骤":"No recorded failures",
+  "相关修改":"Related prior edits",
+  "未找到关联文件修改":"No prior edits matched the recorded file evidence",
+  "本轮后续相同命令":"Later runs of the same command in this turn",
+  "未记录验证":"No matching verification was recorded",
+  "工作目录缺失，关联仅基于命令文本":"Working directory missing. Matched by exact command text.",
+  "本轮文件操作":"Recorded file activity in this turn",
+  "本轮验证命令":"Check commands in this turn",
+  "未记录文件改动":"No recorded file changes",
+  "未识别到验证命令":"No recognized check command",
+  "打开原步骤":"Open original step",
+  "添加到排查包":"Add to report",
+  "从排查包移除":"Remove from report",
+  "没有 Skills 或 MCP 调用记录":"No recorded Skill or MCP activity",
+  "选取本轮步骤后可预览并保存。默认仅包含状态与类型。":"Select steps to preview and save. Only status and type are included by default.",
+  "命令与脚本":"Commands and scripts",
+  "消息内容":"Message text",
+  "调用参数与错误":"Arguments and errors",
+  "输出与退出码":"Output and exit code",
+  "文件路径与补丁":"Paths and patches",
+  "调用与轮次 ID":"Call and turn IDs",
+  "保存 Markdown":"Save Markdown",
+  "已保存到本机":"Saved locally",
+  "排查包预览":"Report preview",
+  "本轮没有可选步骤":"No steps in this turn",
+  "折叠详情":"Details",
+  "条记录":"records",
+  "调用":"Calls",
+  "文件引用":"File references",
+  "无已记录耗时":"No duration recorded",
+  "检查结果以退出码或工具状态为准":"Check results reflect exit codes or recorded tool status.",
+  "记录位置":"Record location",
+  "工具结果未记录":"No tool result recorded",
   "模型和轮次":"Model & turns",
   "已中止":"Aborted",
   "工具调用 ID":"Tool call ID",
@@ -314,7 +376,7 @@ function eventName(step){
   const label=[step.itemType,step.title].find(key=>Object.hasOwn(eventLabels,key));
   return label ? eventLabels[label] : [step.title,step.title];
 }
-const filters=[['activity','执行轨迹'],['tool','工具'],['skill','Skills'],['mcp','MCP'],['model','模型和轮次'],['event','事件'],['message','消息'],['all','全部记录']];
+const filters=[['activity','执行轨迹'],['tool','工具'],['skill','Skills'],['mcp','MCP'],['request','请求'],['model','模型和轮次'],['event','事件'],['message','消息'],['all','全部记录']];
 const isActivity = (step,type) => type!=='event' && (type!=='model' || ['失败','已中止'].includes(step.state));
 function renderFilters(steps){
   const bar=$('activity-filter');
@@ -324,6 +386,7 @@ function renderFilters(steps){
   for(const step of steps){
     const type=labelStep(step).category;
     counts[type]=(counts[type]??0)+1;
+    if(requestEvidence(step))counts.request=(counts.request??0)+1;
     if(isActivity(step,type))counts.activity++;
   }
   const key=JSON.stringify([language,display.category,counts]);
@@ -336,6 +399,56 @@ function renderFilters(steps){
     button.onclick=()=>{display.category=category;display.file=null;render();latestPosition();};
     bar.append(button);
   }
+}
+function childSession(step){
+  if(!local || !step?.child)return null;
+  const provider=localSessions.find(parent=>parent.key===localKey)?.provider;
+  return localSessions.find(session=>{
+    const file=session.key.split('/').at(-1);
+    return session.provider===provider && session.key!==localKey &&
+      (file===step.child+'.jsonl' || file==='agent-'+step.child+'.jsonl' ||
+        (provider==='Codex' && file.endsWith('-'+step.child+'.jsonl')));
+  });
+}
+function renderChildSession(pane,step){
+  if(!local || (!step.child && !['spawn_agent','Agent','Task'].includes(step.tool)))return;
+  const group=node('details',undefined,'section');
+  const content=node('div',undefined,'child-records');
+  group.append(node('summary',t('展开子会话')+(step.agentPath?' · '+step.agentPath:'')));
+  if(step.child) group.append(node('p',t('子智能体 ID')+' · '+step.child,'tool-name'));
+  const child=childSession(step);
+  if(!child){
+    group.append(node('p',t(step.child?'关联子会话日志尚未找到':'日志未记录可关联的子会话 ID'),'event-description'));
+    pane.append(group);
+    return;
+  }
+  const actions=node('div',undefined,'actions');
+  const open=node('button',t('打开子会话'));
+  open.onclick=()=>void selectLocal(child.key);
+  const refresh=node('button',t('刷新子会话'));
+  let loaded=false;
+  async function load(){
+    refresh.disabled=true;
+    content.textContent=t('读取中…');
+    try {
+      const result=await invoke('read_session',{key:child.key});
+      content.replaceChildren();
+      for(const row of result.steps){
+        if(!isActivity(row,labelStep(row).category))continue;
+        const title=[stepKind(row),labelStep(row).title,t(row.state),readableTime(row.time,true)].filter(Boolean).join(' · ');
+        const body=[row.command,row.args,row.output,row.patch,row.content,row.reason].filter(Boolean).join('\n');
+        content.append(section(title,body,row.role==='assistant' || row.state==='失败'));
+      }
+      loaded=true;
+      if(!content.children.length)content.append(node('p',t('没有符合筛选条件的步骤'),'muted'));
+    } catch(error) { loaded=false;content.textContent=String(error); }
+    finally{refresh.disabled=false;}
+  }
+  refresh.onclick=()=>void load();
+  group.ontoggle=()=>{if(group.open && !loaded && !refresh.disabled)void load();};
+  actions.append(open,refresh);
+  group.append(actions,content);
+  pane.append(group);
 }
 function details(steps) {
   const pane=$('detail'), step=steps.find(row=>row.id===display.selected);
@@ -368,7 +481,7 @@ function details(steps) {
   }
   pane.append(actions);
   const identifiers=[['工具调用 ID',step.call],['轮次 ID',step.turnId],['根轮次 ID',step.rootTurnId],
-    ['模型响应 ID',step.responseId],['请求 ID',step.requestId],['耗时',typeof step.durationMs==='number'?number(step.durationMs)+' ms':null]];
+    ['模型响应 ID',step.responseId],['请求 ID',step.requestId],['源日志偏移',step.sourceOffset],['结果日志偏移',step.resultOffset],['耗时',typeof step.durationMs==='number'?number(step.durationMs)+' ms':null]];
   for(const [label,value] of identifiers){
     if(value==null || value==='')continue;
     const row=node('p',undefined,'tool-name');
@@ -378,6 +491,17 @@ function details(steps) {
   if(step.reason)pane.append(section(t('已记录原因'),step.reason,true));
   else if(step.diagnostic && ['失败','已中止'].includes(step.state))pane.append(node('p',t('日志未记录原因'),'muted tool-name'));
   if(step.errorCode)pane.append(section(t('错误代码或类型'),step.errorCode,true));
+  const request=requestEvidence(step);
+  if(request){
+    pane.append(node('h2',t(request.type==='model'?'模型请求与响应记录':'外部请求线索')));
+    if(request.type!=='model'){
+      pane.append(node('p',t('这是日志记录的操作或入参。网络状态、响应码和请求完成情况以日志证据为准。'),'event-description'));
+      if(request.status!=null)pane.append(node('p',t('已记录 HTTP 状态码')+' · '+request.status,'tool-name'));
+      if(request.method)pane.append(node('p',t('HTTP 方法')+' · '+request.method,'tool-name'));
+      if(request.targets.length)pane.append(section(t('已记录目标'),request.targets.join('\n'),true));
+      else pane.append(node('p',t('日志未记录目标'),'muted tool-name'));
+    }
+  }
   if(info.external)pane.append(node('p',t('外部调用信息以日志为准'),'event-description'));
   if(step.time)pane.append(node('small',readableTime(step.time),'step-time'));
   if(step.cwd)pane.append(section(t('工作目录'),step.cwd));
@@ -395,40 +519,13 @@ function details(steps) {
   else if(step.tool && !['等待结果','未记录结果'].includes(step.state))pane.append(node('p',t('没有记录工具输出'),'muted tool-name'));
   if(step.patch)pane.append(section(t('补丁'),step.patch,true));
   if(step.content)pane.append(section(step.kind==='消息'?t('消息'):t('读取结果'),step.content,true));
-  if(step.child && local){
-    const child=localSessions.find(session=>{
-      const file=session.key.split('/').at(-1);
-      return session.provider===localSessions.find(parent=>parent.key===localKey)?.provider &&
-        session.key!==localKey && (file===step.child+'.jsonl' || file==='agent-'+step.child+'.jsonl' ||
-        (session.provider==='Codex' && file.endsWith('-'+step.child+'.jsonl')));
-    });
-    if(child){
-      const group=node('details',undefined,'section');
-      const content=node('div');
-      group.append(node('summary',t('展开子会话')),content);
-      let loaded=false;
-      group.ontoggle=async()=>{
-        if(!group.open || loaded)return;
-        loaded=true;
-        content.textContent=t('读取中…');
-        try {
-          const result=await invoke('read_session',{key:child.key});
-          content.replaceChildren();
-          for(const row of result.steps){
-            const body=[row.command,row.args,row.output,row.patch,row.content].filter(Boolean).join('\n');
-            content.append(section(t(row.kind)+' · '+row.title+' · '+t(row.state),body));
-          }
-        } catch(error) { loaded=false;content.textContent=String(error); }
-      };
-      pane.append(group);
-    }
-  }
+  renderChildSession(pane,step);
 }
 let detailKey='';
 function visibleSteps(steps){
   return steps.filter(step=>{
     const category=labelStep(step).category;
-    return (importedChat() || display.category==='all' || (display.category==='activity' && isActivity(step,category)) || category===display.category);
+    return (importedChat() || display.category==='all' || (display.category==='activity' && isActivity(step,category)) || (display.category==='request' && requestEvidence(step)) || category===display.category);
   }).filter(step=>(!display.failed || ['失败','已中止'].includes(step.state)) && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
 }
 function render() {
@@ -443,6 +540,8 @@ function render() {
   $('import-chatgpt').hidden=!local;
   $('import-status').hidden=!local || !$('import-status').textContent;
   $('failed').hidden=Boolean(importedChat());
+  $('diagnostics').hidden=Boolean(importedChat());
+  $('diagnostics').disabled=!steps.length;
   for(const id of ['play','next','reset'])$(id).hidden=local;
   $('play').textContent=t(display.timer?'暂停播放':'播放后续日志');
   $('play').disabled=done;$('next').disabled=done;
@@ -487,7 +586,7 @@ function render() {
         const headline=node('strong',t(info.title??'未知记录'));
         if(info.category==='tool' && (step.command || step.script))headline.className='code-preview';
         const type=info.category==='skill'?'Skills':info.category==='mcp'?'MCP':info.category==='model'?t('模型和轮次'):info.external?t('外部工具'):stepKind(step);
-        label.append(headline,node('small',[type,step.tool && (step.command || step.script)?step.tool:null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
+        label.append(headline,node('small',[type,step.child?t('子会话'):null,step.tool && (step.command || step.script)?step.tool:null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
         e.append(node('span',type[0],'icon '+info.category),label,node('span',t(step.state),'state '+stateClass));
         e.setAttribute('aria-pressed',String(step.id===display.selected));
         group.append(e);
@@ -496,7 +595,8 @@ function render() {
     }
     if(!visible.length)container.append(node('p',t('没有符合筛选条件的步骤'),'empty'));
   }
-  const key=JSON.stringify([language,localKey,display.active,steps.find(step=>step.id===display.selected)]);
+  const selected=steps.find(step=>step.id===display.selected);
+  const key=JSON.stringify([language,localKey,display.active,selected,childSession(selected)?.key]);
   if(detailKey!==key){detailKey=key;details(steps);}
   const usage=$('usage');
   usage.hidden=!local || !localKey || Boolean(importedChat());
@@ -569,14 +669,32 @@ $('mode').onclick=async()=>{
     if(local)render();
   } catch(error) { if(local)$('meta').textContent=String(error); }
 };
+$('folder-toggle').onclick=()=>{
+  const panel=$('folder-options');
+  panel.hidden=!panel.hidden;
+  $('folder-toggle').setAttribute('aria-expanded',String(!panel.hidden));
+};
 async function addFolder(provider) {
+  const status=$('folder-status');
+  const controls=[$('codex-folder'),$('claude-folder')];
+  controls.forEach(control=>{control.disabled=true;});
+  status.hidden=false;
+  status.textContent=t('请选择日志目录');
   try {
-    if(await invoke('choose_folder',{provider})) {
-      localSessions=await invoke('local_sessions');
-      if(local)render();
+    if(!await invoke('choose_folder',{provider})){
+      status.hidden=true;
+      return;
     }
-  } catch(error) { if(local)$('meta').textContent=String(error); }
+    localSessions=await invoke('local_sessions');
+    status.textContent=t('已添加日志目录')+' · '+provider;
+    if(local)render();
+  } catch(error) {
+    status.textContent=t('无法添加日志目录')+' · '+String(error);
+  } finally {
+    controls.forEach(control=>{control.disabled=false;});
+  }
 }
+
 let importCount=null;
 function showImportCount(){
   if(importCount==null)return;
