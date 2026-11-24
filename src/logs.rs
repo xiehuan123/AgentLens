@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{BufRead, BufReader, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -97,8 +97,45 @@ fn files(extra: &[(PathBuf, Provider)]) -> BTreeMap<PathBuf, (Provider, bool)> {
     found
 }
 
+fn project_hint(path: &Path, provider: Provider) -> Option<String> {
+    let reader = BufReader::new(File::open(path).ok()?.take(256 * 1024));
+    reader
+        .split(b'\n')
+        .take(16)
+        .filter_map(Result::ok)
+        .find_map(|line| {
+            let record = serde_json::from_slice::<Value>(&line).ok()?;
+            let cwd = match provider {
+                Provider::Codex if record["type"] == "session_meta" => {
+                    record["payload"]["cwd"].as_str()
+                }
+                Provider::Claude => record["cwd"].as_str(),
+                _ => None,
+            }?;
+            Some(cwd.to_owned())
+        })
+}
+
 pub fn list(db: &Connection, extra: &[(PathBuf, Provider)]) -> Vec<Session> {
     let mut result = Vec::new();
+    let mut catalog = BTreeMap::new();
+    if let Ok(mut query) = db.prepare("SELECT path,cwd,modified,provider,archived FROM catalog") {
+        if let Ok(rows) = query.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, bool>(4)?,
+            ))
+        }) {
+            for (key, cwd, modified, provider, archived) in rows.flatten() {
+                if let Some(provider) = Provider::from_name(&provider) {
+                    catalog.insert(key, (cwd, modified.max(0) as u64, provider, archived));
+                }
+            }
+        }
+    }
     for (path, (provider, archived)) in files(extra) {
         let key = path.to_string_lossy().into_owned();
         let modified = path
@@ -108,13 +145,23 @@ pub fn list(db: &Connection, extra: &[(PathBuf, Provider)]) -> Vec<Session> {
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or_default();
-        let cwd: Option<String> = db
-            .query_row("SELECT cwd FROM sources WHERE path=?1", [&key], |row| {
-                row.get(0)
-            })
-            .ok();
-        let project = cwd
-            .as_deref()
+        let cwd = catalog
+            .get(&key)
+            .filter(|entry| !entry.0.is_empty())
+            .map(|entry| entry.0.clone())
+            .or_else(|| project_hint(&path, provider))
+            .unwrap_or_default();
+        let changed = catalog
+            .get(&key)
+            .is_none_or(|entry| entry.1 != modified || entry.0 != cwd);
+        if changed {
+            let _=db.execute("INSERT INTO catalog VALUES (?1,?2,?3,?4,?5) ON CONFLICT(path) DO UPDATE SET cwd=excluded.cwd,modified=excluded.modified,provider=excluded.provider,archived=excluded.archived",params![key,cwd,modified as i64,provider.name(),archived]);
+        }
+        catalog.insert(key, (cwd, modified, provider, archived));
+    }
+    for (key, (cwd, modified, provider, archived)) in catalog {
+        let path = Path::new(&key);
+        let project = Some(cwd.as_str())
             .filter(|cwd| !cwd.is_empty())
             .and_then(|cwd| Path::new(cwd).file_name())
             .or_else(|| path.parent().and_then(Path::file_name))
@@ -419,7 +466,11 @@ fn migrate(db: &Connection) -> Result<(), String> {
       path TEXT NOT NULL, ordinal INTEGER NOT NULL, sub INTEGER NOT NULL, body TEXT NOT NULL,
       PRIMARY KEY(path, ordinal, sub)
     );
-    PRAGMA user_version = 2;",
+    CREATE TABLE IF NOT EXISTS catalog (
+      path TEXT PRIMARY KEY, cwd TEXT NOT NULL, modified INTEGER NOT NULL,
+      provider TEXT NOT NULL, archived INTEGER NOT NULL
+    );
+    PRAGMA user_version = 3;",
     )
     .map_err(|e| e.to_string())
 }
