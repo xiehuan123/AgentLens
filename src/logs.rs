@@ -365,6 +365,45 @@ fn tool(name: &str, id: Option<&str>, input: &Value, key: &str) -> Value {
         "command":command,"path":paths.first(),"paths":paths,"cwd":args.get("workdir"),"args":string(input),"patch":patch,"key":key})
 }
 
+fn codex_call(payload: &Value) -> Value {
+    let name = payload["name"].as_str().unwrap_or("未知工具");
+    let input = payload.get("arguments").unwrap_or(&payload["input"]);
+    let mut call = tool(name, payload["call_id"].as_str(), input, "codex");
+    if let Some(namespace) = payload["namespace"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+    {
+        call["namespace"] = json!(namespace);
+    }
+    if name == "exec" {
+        call["script"] = input.as_str().map_or(Value::Null, |script| json!(script));
+    }
+    call
+}
+
+fn completed_item(payload: &Value) -> Value {
+    let item = &payload["item"];
+    let kind = item["type"].as_str().unwrap_or("unknown");
+    let call = item["id"].as_str();
+    let failed = match item["status"].as_str() {
+        Some("failed" | "Failed" | "declined" | "Declined") => Some(true),
+        Some("completed" | "Completed") => Some(false),
+        _ => None,
+    };
+    match kind {
+        "CommandExecution" => {
+            json!({"event":"evidence","call":call,"kind":"命令","tool":"exec_command",
+            "command":string(&item["command"]),"cwd":item["cwd"],"output":string(&item["aggregated_output"]),
+            "exit":item["exit_code"],"failed":item["exit_code"].as_i64().map(|code| code!=0).or(failed)})
+        }
+        "WebSearch" => json!({"event":"evidence","call":call,"kind":"工具","tool":"web_search",
+            "args":string(&item["action"]).or_else(|| string(&item["query"])),"network":true}),
+        "McpToolCall" => json!({"event":"evidence","call":call,"kind":"工具","tool":item["tool"],
+            "server":item["server"],"args":string(&item["arguments"]),"output":string(&item["result"]),"failed":failed}),
+        _ => json!({"event":"unknown","type":"item_completed","itemType":kind}),
+    }
+}
+
 fn message(role: &str, content: Option<String>) -> Vec<Value> {
     match content {
         Some(content) if !content.is_empty() => {
@@ -472,12 +511,21 @@ fn codex(record: &Value) -> Vec<Value> {
                 Vec::new()
             }
         }
-        (Some("response_item"), Some("function_call" | "custom_tool_call")) => vec![tool(
-            payload["name"].as_str().unwrap_or("未知工具"),
-            payload["call_id"].as_str(),
-            payload.get("arguments").unwrap_or(&payload["input"]),
-            "codex",
-        )],
+        (Some("response_item"), Some("function_call" | "custom_tool_call")) => {
+            vec![codex_call(payload)]
+        }
+        (Some("event_msg"), Some("item_completed")) => vec![completed_item(payload)],
+        (Some("response_item"), Some("web_search_call")) => {
+            let mut call = tool(
+                "web_search",
+                payload["id"].as_str(),
+                &payload["action"],
+                "codex",
+            );
+            call["network"] = json!(true);
+            call["event"] = json!("evidence");
+            vec![call]
+        }
         (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
             let output = &payload["output"];
             let output_text = string(output);
@@ -567,7 +615,11 @@ fn parse(provider: Provider, record: &Value) -> Vec<Value> {
         Provider::Claude => claude(record),
     };
     for event in &mut events {
-        event["time"] = record["timestamp"].clone();
+        event["time"] = if record["timestamp"].is_null() && event["event"] == "evidence" {
+            record["payload"]["completed_at_ms"].clone()
+        } else {
+            record["timestamp"].clone()
+        };
     }
     events
 }
@@ -679,7 +731,7 @@ fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), St
     use std::os::unix::fs::MetadataExt;
     let file = File::open(path).map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    let identity = format!("3:{}:{}", metadata.dev(), metadata.ino());
+    let identity = format!("4:{}:{}", metadata.dev(), metadata.ino());
     let key = path.to_string_lossy();
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -743,6 +795,16 @@ fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), St
 fn timeline(events: &[Value]) -> Vec<Value> {
     let mut steps: Vec<Value> = Vec::new();
     let mut calls = BTreeMap::new();
+    let call_ids: std::collections::HashSet<_> = events
+        .iter()
+        .filter(|event| event["event"] == "call")
+        .filter_map(|event| event["call"].as_str())
+        .collect();
+    let evidence: BTreeMap<_, _> = events
+        .iter()
+        .filter(|event| event["event"] == "evidence")
+        .filter_map(|event| Some((event["call"].as_str()?, event)))
+        .collect();
     let mut round = 1;
     let mut started = false;
     for event in events {
@@ -757,7 +819,11 @@ fn timeline(events: &[Value]) -> Vec<Value> {
             Some("result") => {
                 if let Some(index) = event["call"].as_str().and_then(|id| calls.get(id)).copied() {
                     let step: &mut Value = &mut steps[index];
-                    step["state"] = json!(if event["failed"] == true {"失败"} else if event["failed"] == false {"成功"} else {"已记录结果"});
+                    if let Some(failed) = event["failed"].as_bool() {
+                        step["state"] = json!(if failed {"失败"} else {"成功"});
+                    } else if !matches!(step["state"].as_str(), Some("成功" | "失败")) {
+                        step["state"] = json!("已记录结果");
+                    }
                     if event["paths"].as_array().is_some_and(|paths| !paths.is_empty()) {
                         step["paths"] = event["paths"].clone();
                     }
@@ -771,12 +837,29 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                         "state":"未知","output":event["output"],"exit":event["exit"],"time":event["time"]}));
                 }
             }
-            Some("call") => {
+            Some("evidence") if event["call"].as_str().is_some_and(|id|call_ids.contains(id) || calls.contains_key(id)) => (),
+            Some("call" | "evidence") => {
                 let mut step = event.clone();
                 step["id"] = json!(steps.len()+1);
                 step["round"] = json!(round);
                 step["state"] = json!("等待结果");
-                if let Some(call) = event["call"].as_str() { calls.insert(call,steps.len()); }
+                if event["event"] == "evidence" {
+                    step["title"] = event["tool"].clone();
+                }
+                let source = if let Some(call) = event["call"].as_str() {
+                    calls.insert(call,steps.len());
+                    evidence.get(call).copied()
+                } else if event["event"] == "evidence" { Some(event) } else { None };
+                if let Some(source) = source {
+                    for field in ["command","cwd","server","exit","output","args","network"] {
+                        if !source[field].is_null() && (field != "args" || step[field].is_null()) {
+                            step[field] = source[field].clone();
+                        }
+                    }
+                    step["state"] = json!(match source["failed"].as_bool() {
+                        Some(true) => "失败", Some(false) => "成功", None => "已记录结果",
+                    });
+                }
                 steps.push(step);
             }
             Some("message") => {
@@ -786,9 +869,9 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                 }
                 let content = event["content"].as_str().unwrap_or_default();
                 steps.push(json!({"id":steps.len()+1,"round":round,"kind":"消息","title":content.chars().take(110).collect::<String>(),
-                    "content":content,"state":"已记录","time":event["time"]}));
+                    "content":content,"role":event["role"],"state":"已记录","time":event["time"]}));
             }
-            Some("unknown") => steps.push(json!({"id":steps.len()+1,"round":round,"kind":"事件","title":event["type"],"state":"未知","time":event["time"]})),
+            Some("unknown") => steps.push(json!({"id":steps.len()+1,"round":round,"kind":"事件","title":event["type"],"itemType":event["itemType"],"state":"已记录","time":event["time"]})),
             _ => (),
         }
     }
@@ -824,6 +907,23 @@ mod tests {
             metadata.project("", Path::new("/workspace/project")),
             Some(("nested", "Nested", Some(2)))
         );
+    }
+
+    #[test]
+    fn completed_command_adds_tool_evidence_without_duplicate_step() {
+        let call = json!({"type":"response_item","payload":{"type":"function_call","call_id":"one","name":"exec","arguments":"{}"}});
+        let done = json!({"type":"event_msg","payload":{"type":"item_completed","item":{
+            "type":"CommandExecution","id":"one","command":"cargo check","exit_code":1,"aggregated_output":"error"
+        }}});
+        let events = [call, done]
+            .iter()
+            .flat_map(|record| parse(Provider::Codex, record))
+            .collect::<Vec<_>>();
+        let steps = timeline(&events);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0]["command"], "cargo check");
+        assert_eq!(steps[0]["exit"], 1);
+        assert_eq!(steps[0]["state"], "失败");
     }
 
     #[test]

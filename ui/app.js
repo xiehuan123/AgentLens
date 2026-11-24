@@ -1,5 +1,22 @@
 
 const en = {
+  "执行轨迹":"Trajectory",
+  "外部工具":"External tool",
+  "外部调用信息以日志为准":"External activity shown here is limited to what the tool recorded.",
+  "全部记录":"All records",
+  "Skills 调用":"Skill invoked",
+  "技能文件引用":"Skill file referenced",
+  "实际命令":"Recorded command",
+  "提交给工具的脚本":"Script sent to tool",
+  "命令已记录":"Command recorded",
+  "MCP 服务":"MCP server",
+  "事件类型":"Event type",
+  "已完成项目":"Completed item",
+  "没有可用的事件说明":"No description is available for this event. The log identifier is shown below.",
+  "消息":"Messages",
+  "步骤":"steps",
+  "条事件":"events",
+  "失败数":"failed",
   "导入 ChatGPT 聊天":"Import ChatGPT chats",
   "导入的聊天记录":"Imported chat history",
   "正在导入…":"Importing…",
@@ -122,7 +139,7 @@ const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 let localSessions = [], localSteps = [], localKey = null, local = false;
 let localUsage=null, localModel=null;
 let loading = false, refreshing = false, eventCount = null, lastUpdate = null, listTick = 0, selection = 0;
-const display = {active:0, selected:4, failed:false, file:null, unseen:0, timer:null};
+const display = {active:0, selected:4, failed:false, category:"activity", file:null, unseen:0, timer:null};
 const initialCount = 7;
 const counts = sources.map(() => initialCount);
 let logs = [];
@@ -181,6 +198,7 @@ function sessions() {
 
 function showStep(id) {
   display.selected=id;display.failed=false;display.file=null;
+  display.category='all';
   render();
   const round=$('step-'+id)?.closest('details');
   if(round)round.open=true;
@@ -214,11 +232,86 @@ function argumentDetails(raw) {
   return details;
 }
 const stepPaths=step=>step.paths?.length ? step.paths : step.path ? [step.path] : [];
+function objectArgs(raw){
+  try {
+    const data=JSON.parse(raw);
+    return data && typeof data==='object' && !Array.isArray(data)?data:{};
+  } catch { return {}; }
+}
+function labelStep(step){
+  const args=objectArgs(step.args);
+  const namespace=step.namespace??'';
+  const tool=step.tool??'';
+  const mcp=/^mcp__([^_].*?)(?:__(.+))?$/.exec(tool);
+  const server=step.server || mcp?.[1] || (namespace.startsWith('mcp__')?namespace.slice(5):'');
+  if(server)return {category:'mcp',title:server+' / '+(mcp?.[2]??tool),server};
+  if(tool.toLowerCase()==='skill')return {category:'skill',title:args.skill??args.name??tool,explicit:true};
+  const refs=[...new Set(
+    [step.path,step.command,step.script].filter(Boolean).flatMap(value=>
+      [...String(value).matchAll(/(?:^|[~/.])skills[\/]+([^\/\s"'`]+)\/SKILL\.md\b/g)].map(match=>match[1]))
+  )];
+  if(refs.length)return {category:'skill',title:refs.join(' · '),explicit:false};
+  if(step.kind==='事件')return {category:'event',title:eventName(step)[language==='en'?1:0]};
+  if(step.kind==='消息')return {category:'message',title:step.title};
+  const external=step.network || /^(web__|browser__)/.test(namespace) || /^(web_search|WebSearch|WebFetch)$/.test(tool);
+  return {category:'tool',external,title:step.command || step.script || step.path || step.title};
+}
+const eventLabels={
+  task_started:['开始任务','Task started','代理开始处理一轮任务。','The agent started a task turn.'],
+  additional_tools:['登记可用工具','Tools registered','运行时记录了可用的工具定义。','The runtime recorded available tool definitions.'],
+  world_state:['更新运行状态','Runtime state update','运行时记录了一次环境状态。','The runtime recorded an environment state.'],
+  thread_settings_applied:['应用会话配置','Session settings applied','运行时应用了当前会话配置。','The runtime applied the session settings.'],
+  item_completed:['执行项目已完成','Item completed','运行时记录了一个执行项目的结束。可查看项目类型了解是哪类活动。','The runtime recorded the end of an execution item. See its item type for the activity.'],
+  ContextCompaction:['压缩上下文','Context compacted','运行时压缩了较早的会话上下文。','The runtime compacted earlier conversation context.'],
+  SubAgentActivity:['子代理活动结束','Subagent activity completed','运行时记录了一项子代理活动结束。','The runtime recorded completed subagent activity.'],
+  AgentMessage:['助手消息已完成','Assistant message completed','运行时记录了助手消息结束。','The runtime recorded completion of an assistant message.'],
+  UserMessage:['用户消息已处理','User message processed','运行时记录了用户消息处理结束。','The runtime recorded processing of a user message.'],
+  file_history_snapshot:['记录文件快照','File snapshot recorded','日志保存了用于跟踪文件历史的快照。','The log saved a snapshot for tracking file history.'],
+  'file-history-snapshot':['记录文件快照','File snapshot recorded','日志保存了用于跟踪文件历史的快照。','The log saved a snapshot for tracking file history.'],
+  permission_request:['请求执行权限','Permission requested','工具执行需要权限判断。','Tool execution required a permission decision.'],
+};
+function eventName(step){
+  const label=[step.itemType,step.title].find(key=>Object.hasOwn(eventLabels,key));
+  return label ? eventLabels[label] : [step.title,step.title];
+}
+const filters=[['activity','执行轨迹'],['tool','工具'],['skill','Skills'],['mcp','MCP'],['event','事件'],['message','消息'],['all','全部记录']];
+function renderFilters(steps){
+  const bar=$('activity-filter');
+  bar.hidden=Boolean(importedChat());
+  if(bar.hidden)return;
+  const counts={activity:0,all:steps.length};
+  for(const step of steps){
+    const type=labelStep(step).category;
+    counts[type]=(counts[type]??0)+1;
+    if(type!=='event')counts.activity++;
+  }
+  const key=JSON.stringify([language,display.category,counts]);
+  if(key===bar.dataset.key)return;
+  bar.dataset.key=key;
+  bar.replaceChildren();
+  for(const [category,name] of filters){
+    const button=node('button',t(name)+' '+number(counts[category]??0));
+    button.setAttribute('aria-pressed',String(display.category===category));
+    button.onclick=()=>{display.category=category;display.file=null;render();};
+    bar.append(button);
+  }
+}
 function details(steps) {
   const pane=$('detail'), step=steps.find(row=>row.id===display.selected);
   pane.replaceChildren(node('small',t('步骤详情')));
   if(!step){pane.append(node('p',t('选择一个工具步骤查看记录。'),'empty'));return;}
-  pane.append(node('h2',step.kind==='事件'||step.kind==='结果'||step.title==='未知工具'?t(step.title):step.title),node('p',stepKind(step)+' · '+t(step.state),step.state==='失败'?'fail':'muted'));
+  const info=labelStep(step);
+  const heading=info.category==='tool' ? step.tool??step.title : info.title;
+  pane.append(node('h2',t(heading)),node('p',stepKind(step)+' · '+t(step.state),step.state==='失败'?'fail':'muted'));
+  if(info.category==='event'){
+    const event=eventName(step);
+    pane.append(node('p',event[language==='en'?3:2]??t('没有可用的事件说明'),'event-description'));
+    pane.append(node('code',[step.title,step.itemType].filter(Boolean).join(' / ')));
+  } else if(info.category==='skill'){
+    pane.append(node('p',t(info.explicit?'Skills 调用':'技能文件引用')+' · '+info.title,'tool-name'));
+  } else if(info.server){
+    pane.append(node('p',t('MCP 服务')+' · '+info.server,'tool-name'));
+  }
   const actions=node('div',undefined,'actions');
   if(step.state==='失败') {
     const prior=steps.filter(row=>row.id<step.id && row.kind==='修改');
@@ -229,10 +322,11 @@ function details(steps) {
   }
   for(const path of stepPaths(step)){
     const filter=node('button',t('查看本轮同文件步骤')+' · '+path);
-    filter.onclick=()=>{display.file={path,round:step.round??1};display.failed=false;render();};
+    filter.onclick=()=>{display.category='activity';display.file={path,round:step.round??1};display.failed=false;render();};
     actions.append(filter);
   }
   pane.append(actions);
+  if(info.external)pane.append(node('p',t('外部调用信息以日志为准'),'event-description'));
   if(step.time)pane.append(node('small',readableTime(step.time),'step-time'));
   if(step.cwd)pane.append(section(t('工作目录'),step.cwd));
   if(step.tool) {
@@ -240,9 +334,10 @@ function details(steps) {
     tool.append(node('span',t('工具名称')+' '),node('code',step.tool));
     pane.append(tool);
   }
-  if(step.args!=null)pane.append(argumentDetails(step.args));
-  else if(step.tool)pane.append(node('p',t('日志未记录参数'),'muted tool-name'));
-  if(step.command)pane.append(section(t('命令'),step.command,true));
+  if(step.command)pane.append(section(t('实际命令'),step.command,true));
+  if(step.script)pane.append(section(t('提交给工具的脚本'),step.script,true));
+  if(step.args!=null && step.args!==step.script)pane.append(argumentDetails(step.args));
+  else if(step.tool && !step.script)pane.append(node('p',t('日志未记录参数'),'muted tool-name'));
   if(step.exit!=null)pane.append(node('p',t('退出码')+' '+step.exit,step.exit===0?'ok':'fail'));
   if(step.output!=null)pane.append(section(t('工具输出'),step.output,step.state==='失败'));
   else if(step.tool && !['等待结果','未记录结果'].includes(step.state))pane.append(node('p',t('没有记录工具输出'),'muted tool-name'));
@@ -297,7 +392,11 @@ function render() {
   $('file').hidden=!display.file;$('file').textContent=(display.file?.path??'')+' ×';
   sessions();
   const container=$('steps');
-  const visible=steps.filter(step=>(!display.failed || step.state==='失败') && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
+  renderFilters(steps);
+  const visible=steps.filter(step=>{
+    const category=labelStep(step).category;
+    return (importedChat() || display.category==='all' || (display.category==='activity' && category!=='event') || category===display.category);
+  }).filter(step=>(!display.failed || step.state==='失败') && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
   const openRounds = new Map([...container.querySelectorAll('details')].map(e=>[e.dataset.round,e.open]));
   const rounds = new Map();
   for(const step of visible) {
@@ -309,19 +408,30 @@ function render() {
   if(container.dataset.drawKey!==drawKey){
     container.dataset.drawKey=drawKey;
     container.replaceChildren();
+    const latest=[...rounds.keys()].at(-1);
     for(const [round, entries] of rounds){
       const group=node('details',undefined,'round');
       group.dataset.round=round;
-      group.open=openRounds.get(round)??true;
-      group.append(node('summary',t('任务轮次')+' '+round));
+      group.open=openRounds.get(round)??(!local || round===latest || entries.some(step=>step.id===display.selected));
+      const summary=node('summary');
+      const first=steps.find(step=>String(step.round??1)===round && step.role==='user');
+      const label=node('strong',t('任务轮次')+' '+round+(first?' · '+first.title:''));
+      label.title=label.textContent;
+      const failureCount=entries.filter(step=>step.state==='失败').length;
+      summary.append(label,node('small',number(entries.length)+' '+t('步骤')+(failureCount?' · '+number(failureCount)+' '+t('失败数'):'')));
+      group.append(summary);
       for(const step of entries){
         const e=node('button',undefined,'step');
         e.id='step-'+step.id;
         e.onclick=()=>{display.selected=step.id;render();$(e.id)?.focus({preventScroll:true});};
         const stateClass=({失败:'fail',成功:'ok',等待结果:'wait'})[step.state]??'';
         const label=node('span');
-        label.append(node('strong',step.title==null?t('未知记录'):step.kind==='结果'||step.title==='未知工具'?t(step.title):step.title),node('small',[stepKind(step),step.args!=null?t('参数'):null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
-        e.append(node('span',stepKind(step)[0],'icon'),label,node('span',t(step.state),'state '+stateClass));
+        const info=labelStep(step);
+        const headline=node('strong',t(info.title??'未知记录'));
+        if(info.category==='tool' && (step.command || step.script))headline.className='code-preview';
+        const type=info.category==='skill'?'Skills':info.category==='mcp'?'MCP':info.external?t('外部工具'):stepKind(step);
+        label.append(headline,node('small',[type,step.tool && (step.command || step.script)?step.tool:null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
+        e.append(node('span',type[0],'icon '+info.category),label,node('span',t(step.state),'state '+stateClass));
         e.setAttribute('aria-pressed',String(step.id===display.selected));
         group.append(e);
       }
@@ -371,7 +481,7 @@ async function selectLocal(key) {
   localKey=key;
   localSteps=[];localUsage=null;localModel=null;
   eventCount=null;lastUpdate=null;loading=true;
-  Object.assign(display,{selected:null,file:null,failed:false,unseen:0});
+  Object.assign(display,{selected:null,file:null,failed:false,category:"activity",unseen:0});
   render();
   try {
     const session=await invoke('read_session',{key});
@@ -389,7 +499,7 @@ $('mode').onclick=async()=>{
   selection++;loading=false;eventCount=null;lastUpdate=null;listTick=0;
   localKey=null;
   localSteps=[];localUsage=null;localModel=null;
-  Object.assign(display,{selected:local?null:4,file:null,failed:false,unseen:0});
+  Object.assign(display,{selected:local?null:4,file:null,failed:false,category:"activity",unseen:0});
   $('mode').textContent=t(local?'切换演示':'浏览本机会话');
   $('mode-label').textContent=t(local?'本机会话':'演示模式 · 模拟日志');
   $('project').value='';

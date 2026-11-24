@@ -37,3 +37,20 @@ main{min-width:0;display:flex;flex-direction:column;position:relative;overflow:h
 @media(max-width:880px){.layout{grid-template-columns:195px minmax(0,1fr) 245px}}
 .import-chatgpt{margin:0 5px 10px;width:calc(100% - 10px);text-align:left;font-size:12px}
 .import-status{margin:0 5px 10px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+
+.activity-filter{display:flex;gap:5px;overflow-x:auto;padding:9px 16px;background:#fff;border-bottom:1px solid var(--line);flex:none}
+.activity-filter button{flex:none;font-size:12px;padding:4px 8px;white-space:nowrap}
+.round{position:relative;padding:0 0 6px 15px;margin:0 0 9px;border-left:1px solid #d9d6ec}
+.round>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;list-style:none}
+.round>summary::-webkit-details-marker{display:none}
+.round>summary::before{content:'›';position:absolute;left:-7px;background:#f4f5f8;color:var(--accent);width:13px;text-align:center;font-size:16px;line-height:16px}
+.round[open]>summary::before{transform:rotate(90deg)}
+.round>summary strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.round>summary small{white-space:nowrap}
+.step{min-height:49px;margin:5px 0}
+.step strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.step strong.code-preview{font:600 11px/1.5 ui-monospace,monospace;white-space:pre-wrap}
+.icon.skill{background:#e9f3e9;color:#286438}
+.icon.mcp{background:#e5edfb;color:#355caa}
+.icon.event{background:#f0f0f4;color:#616477}
+.event-description{margin:10px 0;color:var(--muted);font-size:13px}
