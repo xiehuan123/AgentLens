@@ -1,0 +1,23 @@
+name: Checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust formatting tools
+        run: rustup component add rustfmt
+      - name: Check Rust formatting
+        run: cargo fmt --check
+      - name: Run Rust unit tests
+        run: cargo test --locked
+      - name: Check frontend scripts
+        run: |
+          node --check ui/app.js
+          node --check ui/diagnostics.js
+          node --check ui/requests.js

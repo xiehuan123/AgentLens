@@ -1,6 +1,24 @@
+<img src="icons/icon.png" width="84" height="84" alt="AgentLens logo">
+
 # AgentLens
 
+[简体中文](docs/zh-CN.md) · [Contributing](CONTRIBUTING.md) · [MIT License](LICENSE)
+
 AgentLens is a local-first macOS desktop viewer for Codex and Claude Code execution logs. Follow a session as records are written, replay earlier turns, and inspect a failed command alongside the file edits recorded before it.
+
+## What you can do
+
+- **Inspect a failure.** See the failed command and error output, find prior edits that match recorded file paths, and check whether the same command ran again in that turn.
+- **Verify a turn.** Review recorded edits and recognizable check commands, including their exit codes when available.
+- **Review Skills and MCP.** Group calls by name and distinguish explicit Skill invocations from references to Skill files.
+- **Inspect request evidence.** See recorded external tool inputs and model response IDs in the **Requests** filter. This view uses source logs, so network status, HTTP status codes, and retry associations appear only where the log supplies them.
+- **Share selected evidence.** Preview a local Markdown report. Commands, arguments, output, paths, and IDs are opt-in fields.
+
+| Source | Live follow | History |
+| --- | --- | --- |
+| Codex | Local JSONL | Local JSONL and archives |
+| Claude Code | Local JSONL | Local JSONL |
+| ChatGPT desktop | — | Imported account export snapshots |
 
 ## Run locally
 
@@ -35,9 +53,11 @@ Pass `debug` for a faster local build. The script produces a locally signed app 
 cargo fmt --check
 cargo test --locked
 node --check ui/app.js
+node --check ui/diagnostics.js
+node --check ui/requests.js
 ```
 
-See the [Chinese guide](docs/zh-CN.md) and [log research](docs/research.md). Licensed under the [MIT License](LICENSE).
+See the [Chinese guide](docs/zh-CN.md), [diagnostics roadmap](docs/diagnostics-roadmap.md), and [log research](docs/research.md).
 
 ## Import ChatGPT desktop chats
 
