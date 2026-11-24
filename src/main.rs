@@ -2,9 +2,13 @@
 
 mod logs;
 mod store;
+mod trace;
 
-use std::path::PathBuf;
-use tauri::Manager;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
+use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -107,16 +111,101 @@ async fn save_diagnostics(app: tauri::AppHandle, markdown: String) -> Result<boo
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Default)]
+struct OpenTrace(Mutex<Option<Arc<trace::TraceBundle>>>);
+
+#[tauri::command]
+fn trace_configured() -> bool {
+    std::env::var_os("CODEX_ROLLOUT_TRACE_ROOT").is_some_and(|value| !value.is_empty())
+}
+
+#[tauri::command]
+async fn open_codex_trace(
+    app: tauri::AppHandle,
+    reduce: bool,
+) -> Result<Option<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(folder) = app
+            .dialog()
+            .file()
+            .set_title("Open Codex Trace bundle")
+            .blocking_pick_folder()
+        else {
+            return Ok(None);
+        };
+        let root = folder.into_path().map_err(|e| e.to_string())?;
+        let recorder = if reduce {
+            let Some(binary) = app
+                .dialog()
+                .file()
+                .set_title("Select the Codex executable that recorded this trace")
+                .blocking_pick_file()
+            else {
+                return Ok(None);
+            };
+            let selected = binary.into_path().map_err(|e| e.to_string())?;
+            let name = selected
+                .file_name()
+                .and_then(|part| part.to_str())
+                .unwrap_or_default();
+            if !(name == "codex" || name == "codex.exe" || name.starts_with("codex-"))
+                || (cfg!(windows) && !name.to_ascii_lowercase().ends_with(".exe"))
+            {
+                return Err(
+                    "Select the installed Codex executable that recorded this trace.".into(),
+                );
+            }
+            Some(selected.canonicalize().map_err(|e| e.to_string())?)
+        } else {
+            None
+        };
+        let trace = trace::TraceBundle::open(root, recorder.as_deref())?;
+        let summary = trace.summary();
+        *app.state::<OpenTrace>()
+            .0
+            .lock()
+            .map_err(|e| e.to_string())? = Some(Arc::new(trace));
+        Ok(Some(summary))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn read_codex_trace_request(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<OpenTrace>();
+        let trace = state.0.lock().map_err(|e| e.to_string())?.clone();
+        trace
+            .as_ref()
+            .ok_or("Open a Codex Trace bundle first.")?
+            .request(&id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn close_codex_trace(state: State<'_, OpenTrace>) -> Result<(), String> {
+    *state.0.lock().map_err(|e| e.to_string())? = None;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(OpenTrace::default())
         .invoke_handler(tauri::generate_handler![
             demo_records,
             local_sessions,
             read_session,
             choose_folder,
             import_chatgpt,
-            save_diagnostics
+            save_diagnostics,
+            trace_configured,
+            open_codex_trace,
+            read_codex_trace_request,
+            close_codex_trace
         ])
         .run(tauri::generate_context!())
         .expect("could not start AgentLens");

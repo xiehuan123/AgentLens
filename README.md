@@ -55,6 +55,7 @@ cargo test --locked
 node --check ui/app.js
 node --check ui/diagnostics.js
 node --check ui/requests.js
+node --check ui/trace.js
 ```
 
 See the [Chinese guide](docs/zh-CN.md), [diagnostics roadmap](docs/diagnostics-roadmap.md), and [log research](docs/research.md).
@@ -72,3 +73,9 @@ From a committed `main` branch with push access to `origin`, run:
 ```
 
 The tag must match both `Cargo.toml` and `tauri.conf.json`. The command pushes `main` and the version tag. GitHub Actions publishes macOS Apple silicon and Intel app ZIPs, a Windows x64 NSIS installer, and SHA-256 checksums to the same Release after all builds succeed. Private repositories keep the Release accessible to users with repository access. These builds use local macOS ad-hoc signing and unsigned Windows installers.
+
+## View original Codex model requests
+
+Use **Codex Trace** in AgentLens for recording status and platform-specific instructions. Codex can record new CLI sessions locally when launched with `CODEX_ROLLOUT_TRACE_ROOT` set. In AgentLens, open the generated bundle, or reduce it with the same Codex executable that recorded it.
+
+The viewer lists recorded model attempts, IDs, timings and linked tool calls. Complete outgoing request bodies are loaded on demand from the selected bundle. The view keeps the trace separate from the session database and diagnostics exports. It reflects what the recorder captured, including capture gaps. See [Codex Rollout Trace](https://github.com/openai/codex/blob/main/codex-rs/rollout-trace/README.md).

@@ -20,6 +20,7 @@ cargo test --locked
 node --check ui/app.js
 node --check ui/diagnostics.js
 node --check ui/requests.js
+node --check ui/trace.js
 ```
 
 Describe the behavior and verification in the pull request. Use the issue templates for reproducible reports and feature proposals. Review exported diagnostics before sharing and keep actual transcripts, database files, and account exports out of commits.

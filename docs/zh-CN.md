@@ -53,3 +53,22 @@ Codex 本地日志保存的响应 ID 可用于定位已有响应记录。原始�
 ```
 
 命令会推送主分支和版本标签，GitHub Actions 自动构建 Apple 芯片和 Intel Mac 的应用 ZIP、Windows x64 的 NSIS 安装程序，并把三个包和 SHA-256 校验文件上传到同一个 GitHub Release。私有仓库的下载权限由 GitHub 仓库权限控制。首次发布需要对仓库和 GitHub Actions 工作流有写权限。macOS 包使用临时签名，Windows 安装程序未签名。
+
+## 开启 Codex Trace 并查看原始模型请求
+
+点击顶栏「Codex Trace」。面板区分 AgentLens 是否继承录制目录配置、是否打开 Trace 包，以及包是否完整封存。桌面应用与终端可能读取不同环境变量。
+
+macOS 从终端启动新的 Codex CLI 会话：
+
+```sh
+CODEX_ROLLOUT_TRACE_ROOT="$HOME/agentlens-traces" codex
+```
+
+Windows PowerShell：
+
+```powershell
+$env:CODEX_ROLLOUT_TRACE_ROOT = Join-Path $HOME 'agentlens-traces'
+codex
+```
+
+在 AgentLens 选生成的 Trace 子目录。含 `state.json` 时选择「打开已生成的 Trace」。否则选择「用 Codex 处理 Trace」，再选择**录制该包的同一个 Codex 可执行文件**。AgentLens 会调用本机 `trace-reduce` 并把临时索引写到独立目录，打开后可查看模型尝试和已完整记录的原始 HTTP 请求体或 WebSocket 消息。源包保持只读，原始请求不写入会话 SQLite 或排查包。普通历史日志无法补录。 [Codex Rollout Trace 说明](https://github.com/openai/codex/blob/main/codex-rs/rollout-trace/README.md)

@@ -82,3 +82,4 @@ main{min-width:0;display:flex;flex-direction:column;position:relative;overflow:h
 .diagnostic-preview{box-sizing:border-box;width:100%;min-height:155px;resize:vertical;padding:8px;border:1px solid var(--line);border-radius:8px;font:12px/1.5 ui-monospace,monospace}
 .child-records .section{margin:8px 0;padding:7px 9px;border:1px solid var(--line);border-radius:8px;overflow-wrap:anywhere}
 .child-records .section summary{font-size:12px}
+#trace-requests code,#trace-dialog p,#trace-requests summary{overflow-wrap:anywhere}

@@ -16,7 +16,7 @@
   </div>
 </section><button id="import-chatgpt" class="import-chatgpt" data-label="导入 ChatGPT 聊天" hidden>导入 ChatGPT 聊天</button><p id="import-status" class="import-status" role="status" hidden></p><div id="sessions"></div><p class="tip" data-label="从失败步骤出发，能否快速找到相关修改并看见重跑结果？选一个会话试走一遍。">从失败步骤出发，能否快速找到相关修改并看见重跑结果？选一个会话试走一遍。</p></aside>
 <main>
-<div class="top"><h1 id="title"></h1><p class="muted" id="meta" aria-live="polite"></p><div class="toolbar"><button id="play" class="primary">播放后续日志</button><button id="next" data-label="单步写入">单步写入</button><button id="reset" data-label="重置">重置</button><button id="failed" aria-pressed="false" data-label="只看失败">只看失败</button><button id="diagnostics" data-label="排查会话">排查会话</button><button id="file" hidden></button></div></div>
+<div class="top"><h1 id="title"></h1><p class="muted" id="meta" aria-live="polite"></p><div class="toolbar"><button id="play" class="primary">播放后续日志</button><button id="next" data-label="单步写入">单步写入</button><button id="reset" data-label="重置">重置</button><button id="failed" aria-pressed="false" data-label="只看失败">只看失败</button><button id="trace-open" type="button">Codex Trace</button><button id="diagnostics" data-label="排查会话">排查会话</button><button id="file" hidden></button></div></div>
 <div id="activity-filter" class="activity-filter" aria-label="执行轨迹" data-aria="执行轨迹"></div>
 <div class="timeline-panel"><div id="timeline" class="scroll" aria-label="执行时间线" data-aria="执行时间线"><div id="steps"></div></div><button id="jump" class="jump primary" hidden></button></div>
 </main>
@@ -27,7 +27,29 @@
   <nav id="diagnostics-tabs" class="diagnostics-tabs"></nav>
   <div id="diagnostics-content" class="diagnostics-content"></div>
 </dialog>
+<dialog id="trace-dialog" class="diagnostics-dialog" aria-labelledby="trace-heading">
+  <div class="diagnostics-header"><h2 id="trace-heading">Codex Trace</h2><form method="dialog"><button data-label="关闭">关闭</button></form></div>
+  <div class="diagnostics-content">
+    <p id="trace-config"></p>
+    <p id="trace-status" role="status"></p>
+    <details id="trace-help" class="diagnostic-section" open>
+      <summary data-label="如何开启 Codex Trace">如何开启 Codex Trace</summary>
+      <p data-label="从该终端启动新的 Codex CLI 会话。旧会话不会补录，正在运行的桌面会话不会切换设置。">从该终端启动新的 Codex CLI 会话。旧会话不会补录，正在运行的桌面会话不会切换设置。</p>
+      <div class="section"><strong>macOS</strong><pre>CODEX_ROLLOUT_TRACE_ROOT="$HOME/agentlens-traces" codex</pre></div>
+      <div class="section"><strong>Windows PowerShell</strong><pre>$env:CODEX_ROLLOUT_TRACE_ROOT = Join-Path $HOME 'agentlens-traces'
+codex</pre></div>
+      <p data-label="选择生成的会话子目录。生成 state.json 时，请使用录制该包的同一个 Codex 可执行文件。">选择生成的会话子目录。生成 state.json 时，请使用录制该包的同一个 Codex 可执行文件。</p>
+      <p data-label="原始请求可能含有提示词、代码和工具数据，只在本机按需读取。">原始请求可能含有提示词、代码和工具数据，只在本机按需读取。</p>
+    </details>
+    <div class="diagnostic-actions">
+      <button id="trace-existing" type="button" data-label="打开已生成的 Trace">打开已生成的 Trace</button>
+      <button id="trace-reduce" type="button" data-label="用 Codex 处理 Trace">用 Codex 处理 Trace</button>
+    </div>
+    <section id="trace-requests"></section>
+  </div>
+</dialog>
 <script src="requests.js"></script>
 <script src="app.js"></script>
 <script src="diagnostics.js"></script>
+<script src="trace.js"></script>
 </html>
