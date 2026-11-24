@@ -78,6 +78,34 @@ function details(steps) {
   if(step.output)pane.append(section('工具输出',step.output,step.state==='失败'));
   if(step.patch)pane.append(section('补丁',step.patch,true));
   if(step.content)pane.append(section('读取结果',step.content,true));
+  if(step.child && local){
+    const child=localSessions.find(session=>{
+      const file=session.key.split('/').at(-1);
+      return session.provider===localSessions.find(parent=>parent.key===localKey)?.provider &&
+        session.key!==localKey && (file===step.child+'.jsonl' || file==='agent-'+step.child+'.jsonl' ||
+        (session.provider==='Codex' && file.endsWith('-'+step.child+'.jsonl')));
+    });
+    if(child){
+      const group=node('details',undefined,'section');
+      const content=node('div');
+      group.append(node('summary','展开子会话'),content);
+      let loaded=false;
+      group.ontoggle=async()=>{
+        if(!group.open || loaded)return;
+        loaded=true;
+        content.textContent='读取中…';
+        try {
+          const result=await invoke('read_session',{key:child.key});
+          content.replaceChildren();
+          for(const row of result.steps){
+            const body=[row.command,row.args,row.output,row.patch,row.content].filter(Boolean).join('\n');
+            content.append(section(row.kind+' · '+row.title+' · '+row.state,body));
+          }
+        } catch(error) { loaded=false;content.textContent=String(error); }
+      };
+      pane.append(group);
+    }
+  }
 }
 let detailKey='';
 function render() {

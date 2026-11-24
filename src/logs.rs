@@ -211,6 +211,23 @@ fn message(role: &str, content: Option<String>) -> Vec<Value> {
     }
 }
 
+fn child_id(output: &Value) -> Option<String> {
+    let parsed = output
+        .as_str()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+    let nested = text(output).and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let id = [Some(output), parsed.as_ref(), nested.as_ref()]
+        .into_iter()
+        .flatten()
+        .find_map(|value| {
+            ["agent_id", "agentId", "thread_id", "new_thread_id"]
+                .iter()
+                .find_map(|key| value[*key].as_str())
+                .map(str::to_owned)
+        });
+    id
+}
+
 fn codex(record: &Value) -> Vec<Value> {
     let payload = &record["payload"];
     match (record["type"].as_str(), payload["type"].as_str()) {
@@ -250,7 +267,7 @@ fn codex(record: &Value) -> Vec<Value> {
             });
             vec![
                 json!({"event":"result","call":payload["call_id"],"output":output_text,"exit":exit,
-                "failed":exit.map(|code| code != 0)}),
+                "failed":exit.map(|code| code != 0),"child":child_id(output)}),
             ]
         }
         (Some("event_msg"), Some("patch_apply_end")) => {
@@ -296,7 +313,8 @@ fn claude(record: &Value) -> Vec<Value> {
                         )),
                         Some("tool_result") => events.push(json!({
                             "event":"result","call":block["tool_use_id"],
-                            "output":string(&block["content"]),"failed":block["is_error"].as_bool()
+                            "output":string(&block["content"]),"failed":block["is_error"].as_bool(),
+                            "child":child_id(&record["toolUseResult"])
                         })),
                         _ => (),
                     }
@@ -493,6 +511,9 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                     step["state"] = json!(if event["failed"] == true {"失败"} else if event["failed"] == false {"成功"} else {"已记录结果"});
                     if event["paths"].as_array().is_some_and(|paths| !paths.is_empty()) {
                         step["paths"] = event["paths"].clone();
+                    }
+                    if matches!(step["tool"].as_str(), Some("spawn_agent" | "Agent" | "Task")) && event["child"].is_string() {
+                        step["child"] = event["child"].clone();
                     }
                     if !event["output"].is_null() { step["output"] = event["output"].clone(); }
                     if !event["exit"].is_null() { step["exit"] = event["exit"].clone(); }
