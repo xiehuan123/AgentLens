@@ -9,12 +9,14 @@ function replay(records, count) {
     : [...steps,record], []);
 }
 const $ = id => document.getElementById(id);
+const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
+let localSessions = [], localSteps = [], localKey = null, local = false;
 const display = {active:0, selected:4, failed:false, file:null, unseen:0, timer:null};
 const initialCount = 7;
 const counts = sources.map(() => initialCount);
 let logs = [];
 const node = (tag, value, cls) => {const e=document.createElement(tag); if(value!==undefined)e.textContent=value; if(cls)e.className=cls; return e;};
-const rows = () => replay(logs[display.active], counts[display.active]);
+const rows = () => local ? localSteps : replay(logs[display.active], counts[display.active]);
 const atBottom = () => $('timeline').scrollHeight-$('timeline').scrollTop-$('timeline').clientHeight<=12;
 function updateJump() {
   $('jump').hidden=!display.unseen;
@@ -25,20 +27,22 @@ function stop() {clearInterval(display.timer);display.timer=null;}
 function sessions() {
   const container=$('sessions');
   container.replaceChildren();
-  sources.forEach((source,i) => {
+  (local ? localSessions : sources).forEach((source,i) => {
     if (($('provider').value && $('provider').value!==source.provider) ||
-      !source.project.includes($('project').value.trim().toLowerCase())) return;
+      !source.project.toLowerCase().includes($('project').value.trim().toLowerCase())) return;
     const button=node('button',undefined,'session');
-    button.setAttribute('aria-pressed',String(i===display.active));
-    button.append(node('span',source.provider+' · '+source.time,'source'),node('strong',source.title),node('small',source.project));
-    button.onclick=()=>{stop();Object.assign(display,{active:i,selected:4,file:null,failed:false,unseen:0});$('round').open=true;render();goBottom();};
+    button.setAttribute('aria-pressed',String(local ? source.key===localKey : i===display.active));
+    button.append(node('span',source.provider+' · '+(source.archived?'归档':local ? new Date(source.modified*1000).toLocaleString() : source.time),'source'),node('strong',source.title),node('small',source.project));
+    button.onclick=()=>{if(local){void selectLocal(source.key);return;}stop();Object.assign(display,{active:i,selected:4,file:null,failed:false,unseen:0});render();goBottom();};
     container.append(button);
   });
   if(!container.children.length)container.append(node('p','未找到匹配的会话','empty'));
 }
 function showStep(id) {
-  display.selected=id;display.failed=false;display.file=null;$('round').open=true;
+  display.selected=id;display.failed=false;display.file=null;
   render();
+  const round=$('step-'+id)?.closest('details');
+  if(round)round.open=true;
   $('step-'+id)?.scrollIntoView({block:'nearest'});
   $('step-'+id)?.focus({preventScroll:true});
 }
@@ -57,17 +61,22 @@ function details(steps) {
   }
   if(step.path){const filter=node('button','查看本轮同文件步骤');filter.onclick=()=>{display.file=step.path;display.failed=false;render();};actions.append(filter);}
   pane.append(actions);
+  if(step.time)pane.append(node('small',step.time));
+  if(step.cwd)pane.append(section('工作目录',step.cwd));
+  if(step.args)pane.append(section('原始参数',step.args));
   if(step.command)pane.append(section('命令',step.command,true));
-  if(step.exit!==undefined)pane.append(node('p','退出码 '+step.exit,step.exit===0?'ok':'fail'));
+  if(step.exit!=null)pane.append(node('p','退出码 '+step.exit,step.exit===0?'ok':'fail'));
   if(step.output)pane.append(section('工具输出',step.output,step.state==='失败'));
   if(step.patch)pane.append(section('补丁',step.patch,true));
   if(step.content)pane.append(section('读取结果',step.content,true));
 }
 let detailKey='';
 function render() {
-  const source=sources[display.active], steps=rows(), done=counts[display.active]===logs[display.active].length;
-  $('title').textContent=source.title;
-  $('meta').textContent=source.provider+' / '+source.project+' · '+steps.length+' 条记录 · '+(done?'演示结束':display.timer?'正在播放':'可继续演示');
+  const source=local ? localSessions.find(session=>session.key===localKey) : sources[display.active];
+  const steps=rows(), done=!local && counts[display.active]===logs[display.active].length;
+  $('title').textContent=source?.title??'本机会话';
+  $('meta').textContent=source ? source.provider+' / '+source.project+' · '+steps.length+' 条记录'+(local?'':' · '+(done?'演示结束':display.timer?'正在播放':'可继续演示')) : '从左侧选择一个会话';
+  for(const id of ['play','next','reset'])$(id).hidden=local;
   $('play').textContent=display.timer?'暂停播放':'播放后续日志';
   $('play').disabled=done;$('next').disabled=done;
   $('failed').setAttribute('aria-pressed',String(display.failed));
@@ -75,21 +84,38 @@ function render() {
   sessions();
   const container=$('steps');
   const visible=steps.filter(step=>(!display.failed || step.state==='失败') && (!display.file || step.path===display.file));
-  const stale=new Set([...container.children].map(e=>e.id));
-  visible.forEach((step,i)=>{
-    const id='step-'+step.id;stale.delete(id);
-    let e=$(id);
-    if(!e){e=node('button',undefined,'step');e.id=id;e.onclick=()=>{display.selected=step.id;render();};}
-    const stateClass=({失败:'fail',成功:'ok',等待结果:'wait'})[step.state]??'';
-    const label=node('span');
-    label.append(node('strong',step.title),node('small',step.kind));
-    if(e.dataset.state!==step.state){e.replaceChildren(node('span',step.kind[0],'icon'),label,node('span',step.state,'state '+stateClass));e.dataset.state=step.state;}
-    e.setAttribute('aria-pressed',String(step.id===display.selected));
-    if(container.children[i]!==e)container.insertBefore(e,container.children[i]??null);
-  });
-  for(const id of stale)container.querySelector(id?'#'+id:'.empty')?.remove();
-  if(!visible.length)container.append(node('p','没有符合筛选条件的步骤','empty'));
-  const key=JSON.stringify([display.active,steps.find(step=>step.id===display.selected)]);
+  const openRounds = new Map([...container.querySelectorAll('details')].map(e=>[e.dataset.round,e.open]));
+  const rounds = new Map();
+  for(const step of visible) {
+    const round=String(step.round??1);
+    if(!rounds.has(round))rounds.set(round,[]);
+    rounds.get(round).push(step);
+  }
+  const drawKey=JSON.stringify([localKey,display.active,display.selected,visible]);
+  if(container.dataset.drawKey!==drawKey){
+    container.dataset.drawKey=drawKey;
+    container.replaceChildren();
+    for(const [round, entries] of rounds){
+      const group=node('details',undefined,'round');
+      group.dataset.round=round;
+      group.open=openRounds.get(round)??true;
+      group.append(node('summary','任务轮次 '+round));
+      for(const step of entries){
+        const e=node('button',undefined,'step');
+        e.id='step-'+step.id;
+        e.onclick=()=>{display.selected=step.id;render();$(e.id)?.focus({preventScroll:true});};
+        const stateClass=({失败:'fail',成功:'ok',等待结果:'wait'})[step.state]??'';
+        const label=node('span');
+        label.append(node('strong',step.title??'未知记录'),node('small',step.kind));
+        e.append(node('span',step.kind[0],'icon'),label,node('span',step.state,'state '+stateClass));
+        e.setAttribute('aria-pressed',String(step.id===display.selected));
+        group.append(e);
+      }
+      container.append(group);
+    }
+    if(!visible.length)container.append(node('p','没有符合筛选条件的步骤','empty'));
+  }
+  const key=JSON.stringify([localKey,display.active,steps.find(step=>step.id===display.selected)]);
   if(detailKey!==key){detailKey=key;details(steps);}
   updateJump();
 }
@@ -105,14 +131,45 @@ function advance(){
 $('project').oninput=sessions;$('provider').onchange=sessions;
 $('next').onclick=advance;
 $('play').onclick=()=>{if(display.timer)stop();else display.timer=setInterval(advance,1100);render();};
-$('reset').onclick=()=>{stop();counts[display.active]=initialCount;Object.assign(display,{selected:4,file:null,failed:false,unseen:0});$('round').open=true;render();goBottom();};
+$('reset').onclick=()=>{stop();counts[display.active]=initialCount;Object.assign(display,{selected:4,file:null,failed:false,unseen:0});render();goBottom();};
 $('failed').onclick=()=>{display.failed=!display.failed;display.file=null;render();};
 $('file').onclick=()=>{display.file=null;render();};
 $('jump').onclick=goBottom;
 $('timeline').addEventListener('scroll',()=>{if(atBottom()&&display.unseen){display.unseen=0;updateJump();}});
-window.__TAURI__.core.invoke('demo_records').then(records => {
-  logs = records;
+async function selectLocal(key) {
+  localKey=key;
+  localSteps=[];
+  Object.assign(display,{selected:null,file:null,failed:false,unseen:0});
   render();
-}).catch(error => {
-  $('meta').textContent = String(error);
-});
+  try {
+    const session=await invoke('read_session',{key});
+    if(!local || localKey!==key)return;
+    localSteps=session.steps;
+    render();
+    goBottom();
+  } catch(error) {
+    if(local && localKey===key)$('meta').textContent=String(error);
+  }
+}
+$('mode').onclick=async()=>{
+  stop();
+  local=!local;
+  localKey=null;
+  localSteps=[];
+  Object.assign(display,{selected:local?null:4,file:null,failed:false,unseen:0});
+  $('mode').textContent=local?'切换演示':'浏览本机会话';
+  $('mode-label').textContent=local?'本机会话':'演示模式 · 模拟日志';
+  $('project').value='';
+  $('provider').value='';
+  render();
+  if(local)try {
+    localSessions=await invoke('local_sessions');
+    if(local)render();
+  } catch(error) { if(local)$('meta').textContent=String(error); }
+};
+$('mode').disabled=true;
+invoke('demo_records').then(records=>{
+  logs=records;
+  $('mode').disabled=false;
+  render();
+}).catch(error=>{$('meta').textContent=String(error);});

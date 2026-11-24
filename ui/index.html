@@ -4,12 +4,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AgentLens</title>
 <link rel="stylesheet" href="style.css">
-<header><span class="mark" aria-hidden="true">A</span><strong>AgentLens</strong><span class="badge">演示模式 · 模拟日志</span><span class="header-note">本地演示</span></header>
+<header><span class="mark" aria-hidden="true">A</span><strong>AgentLens</strong><span class="badge" id="mode-label">演示模式 · 模拟日志</span><button id="mode">浏览本机会话</button><span class="header-note">本地演示</span></header>
 <div class="layout">
 <aside class="side" aria-label="会话"><h2>会话</h2><div class="filters"><input id="project" placeholder="筛选项目" aria-label="筛选项目"><select id="provider" aria-label="代理来源"><option value="">所有来源</option><option>Codex</option><option>Claude Code</option></select></div><div id="sessions"></div><p class="tip">从失败步骤出发，能否快速找到相关修改并看见重跑结果？选一个会话试走一遍。</p></aside>
 <main>
 <div class="top"><h1 id="title"></h1><p class="muted" id="meta" aria-live="polite"></p><div class="toolbar"><button id="play" class="primary">播放后续日志</button><button id="next">单步写入</button><button id="reset">重置</button><button id="failed" aria-pressed="false">只看失败</button><button id="file" hidden></button></div></div>
-<div id="timeline" class="scroll" aria-label="执行时间线"><details class="round" id="round" open><summary>任务轮次 · 修复构建</summary><div id="steps"></div></details></div><button id="jump" class="jump primary" hidden></button>
+<div id="timeline" class="scroll" aria-label="执行时间线"><div id="steps"></div></div><button id="jump" class="jump primary" hidden></button>
 </main>
 <aside id="detail" class="detail" aria-label="步骤详情"></aside>
 </div>
