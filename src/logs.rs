@@ -78,10 +78,26 @@ fn codex_home(home: &Path) -> PathBuf {
         .unwrap_or_else(|| home.join(".codex"))
 }
 
-fn roots() -> Vec<(PathBuf, Provider, bool)> {
-    let home = std::env::var_os("HOME")
+fn user_home() -> PathBuf {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn file_identity(metadata: &fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!("7:{}:{}", metadata.dev(), metadata.ino())
+}
+
+#[cfg(windows)]
+fn file_identity(metadata: &fs::Metadata) -> String {
+    use std::os::windows::fs::MetadataExt;
+    format!("7:windows:{}", metadata.creation_time())
+}
+
+fn roots() -> Vec<(PathBuf, Provider, bool)> {
+    let home = user_home();
     let codex = codex_home(&home);
     let claude = std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
@@ -203,9 +219,7 @@ fn rollout_id(stem: &str) -> Option<&str> {
 }
 
 pub fn list(db: &Connection, extra: &[(PathBuf, Provider)]) -> Vec<Session> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = user_home();
     let desktop = DesktopMetadata::read(&codex_home(&home));
     let mut result = Vec::new();
     let mut catalog = BTreeMap::new();
@@ -818,10 +832,9 @@ pub fn session(
 }
 
 fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
     let file = File::open(path).map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    let identity = format!("7:{}:{}", metadata.dev(), metadata.ino());
+    let identity = file_identity(&metadata);
     let key = path.to_string_lossy();
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)

@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build macOS application
+        run: ./scripts/package-macos.sh release
+      - name: Archive macOS application
+        run: |
+          mkdir -p release-assets
+          ditto -c -k --sequesterRsrc --keepParent target/release/bundle/macos/AgentLens.app "release-assets/AgentLens-${GITHUB_REF_NAME}-macOS-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentlens-macos-${{ matrix.arch }}
+          path: release-assets/*.zip
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Windows x64 installer
+        run: npx --yes @tauri-apps/cli@2.11.0 build --target x86_64-pc-windows-msvc --bundles nsis -- --locked
+      - name: Stage Windows installer
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer" }
+          New-Item -ItemType Directory release-assets | Out-Null
+          Copy-Item $installers[0].FullName "release-assets/AgentLens-$env:GITHUB_REF_NAME-Windows-x64-setup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentlens-windows-x64
+          path: release-assets/*.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agentlens-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mkdir -p release-assets
+          cd release-assets
+          assets=(
+            "AgentLens-${GITHUB_REF_NAME}-macOS-arm64.zip"
+            "AgentLens-${GITHUB_REF_NAME}-macOS-x64.zip"
+            "AgentLens-${GITHUB_REF_NAME}-Windows-x64-setup.exe"
+          )
+          for asset in "${assets[@]}"; do test -s "$asset"; done
+          sha256sum "${assets[@]}" > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "AgentLens $GITHUB_REF_NAME"

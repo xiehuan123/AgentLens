@@ -60,4 +60,8 @@ if __name__ == "__main__":
     (ROOT / "icons/icon.icns").write_bytes(
         b"icns" + struct.pack(">I", len(icon) + 16) + b"ic09" + struct.pack(">I", len(icon) + 8) + icon
     )
+    windows_icon = render(256)
+    ico_header = struct.pack("<HHH", 0, 1, 1)
+    ico_entry = struct.pack("<BBBBHHII", 0, 0, 0, 0, 1, 32, len(windows_icon), 22)
+    (ROOT / "icons/icon.ico").write_bytes(ico_header + ico_entry + windows_icon)
     (ROOT / "ui/icon.png").write_bytes(render(64))

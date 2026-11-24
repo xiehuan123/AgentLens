@@ -43,3 +43,13 @@ Codex 本地日志保存的响应 ID 可用于定位已有响应记录。原始�
 在「导出排查包」选择要分享的步骤。默认仅显示记录位置、时间、类型及状态。可按需加入命令、参数、输出、文件路径、补丁和原始日志位置，再预览并保存本地 Markdown。
 
 时间线的「请求」筛选会列出有证据的模型响应或流错误，以及外部工具、网页操作和已识别的 HTTP 命令线索。方法、目标 URL 和 HTTP 状态码取自日志。AgentLens 不监听实际网络流量，普通聊天导出也不含这类执行数据。
+
+## 一条命令发布 macOS 和 Windows
+
+在当前版本与标签一致、已提交的 `main` 分支上运行：
+
+```sh
+./scripts/release.sh v0.1.0
+```
+
+命令会推送主分支和版本标签，GitHub Actions 自动构建 Apple 芯片和 Intel Mac 的应用 ZIP、Windows x64 的 NSIS 安装程序，并把三个包和 SHA-256 校验文件上传到同一个 GitHub Release。私有仓库的下载权限由 GitHub 仓库权限控制。首次发布需要对仓库和 GitHub Actions 工作流有写权限。macOS 包使用临时签名，Windows 安装程序未签名。
