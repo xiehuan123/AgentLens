@@ -67,7 +67,11 @@ fn roots() -> Vec<(PathBuf, Provider, bool)> {
     let codex = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex"));
+    let claude = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
     vec![
+        (claude.join("projects"), Provider::Claude, false),
         (codex.join("sessions"), Provider::Codex, false),
         (codex.join("archived_sessions"), Provider::Codex, true),
     ]
@@ -228,10 +232,49 @@ fn codex(record: &Value) -> Vec<Value> {
     }
 }
 
+fn claude(record: &Value) -> Vec<Value> {
+    let payload = &record["message"];
+    let kind = record["type"].as_str().unwrap_or("unknown");
+    let mut events = Vec::new();
+    if let (Some(cwd), Some(id)) = (record["cwd"].as_str(), record["sessionId"].as_str()) {
+        events.push(json!({"event":"meta","cwd":cwd,"sessionId":id}));
+    }
+    match kind {
+        "user" | "assistant" => {
+            if kind == "assistant" && payload["model"].is_string() {
+                events.push(json!({"event":"model","model":payload["model"]}));
+            }
+            if record["isMeta"] != true {
+                events.extend(message(kind, text(&payload["content"])));
+            }
+            if let Some(blocks) = payload["content"].as_array() {
+                for block in blocks {
+                    match block["type"].as_str() {
+                        Some("tool_use") => events.push(tool(
+                            block["name"].as_str().unwrap_or("unknown"),
+                            block["id"].as_str(),
+                            &block["input"],
+                            "claude",
+                        )),
+                        Some("tool_result") => events.push(json!({
+                            "event":"result","call":block["tool_use_id"],
+                            "output":string(&block["content"]),"failed":block["is_error"].as_bool()
+                        })),
+                        _ => (),
+                    }
+                }
+            }
+        }
+        "system" if record["subtype"] == "turn_duration" => events.push(json!({"event":"end"})),
+        _ => events.push(json!({"event":"unknown","type":kind})),
+    }
+    events
+}
+
 fn parse(provider: Provider, record: &Value) -> Vec<Value> {
     let mut events = match provider {
         Provider::Codex => codex(record),
-        Provider::Claude => Vec::new(),
+        Provider::Claude => claude(record),
     };
     for event in &mut events {
         event["time"] = record["timestamp"].clone();
@@ -430,5 +473,22 @@ mod tests {
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0]["state"], "失败");
         assert_eq!(steps[0]["output"], "Process exited with code 1\nError");
+    }
+
+    #[test]
+    fn claude_pairs_result_and_omits_thinking() {
+        let records = [
+            json!({"type":"assistant","message":{"content":[{"type":"thinking","thinking":"private"},{"type":"tool_use","id":"t","name":"Read","input":{"file_path":"/tmp/a"}}]}}),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","is_error":false,"content":"data"}]}}),
+        ];
+        let events = records
+            .iter()
+            .flat_map(|record| parse(Provider::Claude, record))
+            .collect::<Vec<_>>();
+        let steps = timeline(&events);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0]["path"], "/tmp/a");
+        assert_eq!(steps[0]["output"], "data");
+        assert!(!json!(events).to_string().contains("private"));
     }
 }
