@@ -228,9 +228,75 @@ fn child_id(output: &Value) -> Option<String> {
     id
 }
 
+const TOKEN_FIELDS: &[&str] = &[
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "reasoning_output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+];
+
+fn usage_event(source: &str, id: Option<&str>, raw: &Value) -> Option<Value> {
+    let values = TOKEN_FIELDS
+        .iter()
+        .filter_map(|field| raw[*field].as_u64().map(|n| (field.to_string(), json!(n))))
+        .collect::<serde_json::Map<String, Value>>();
+    (!values.is_empty())
+        .then(|| json!({"event":"usage","source":source,"messageId":id,"values":values}))
+}
+
+fn usage_summary(events: &[Value]) -> Value {
+    let usage = events
+        .iter()
+        .filter(|event| event["event"] == "usage")
+        .collect::<Vec<_>>();
+    for source in ["token_usage_record", "token_count"] {
+        if let Some(event) = usage.iter().rev().find(|event| event["source"] == source) {
+            return json!({"source":source,"values":event["values"]});
+        }
+    }
+    let mut messages = BTreeMap::<&str, &Value>::new();
+    for event in usage {
+        if let Some(id) = event["messageId"].as_str() {
+            messages.insert(id, &event["values"]);
+        }
+    }
+    if messages.is_empty() {
+        return Value::Null;
+    }
+    let mut values = serde_json::Map::new();
+    for field in [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ] {
+        let total = messages
+            .values()
+            .try_fold(0u64, |sum, value| sum.checked_add(value[field].as_u64()?));
+        if let Some(total) = total {
+            values.insert(field.to_owned(), json!(total));
+        }
+    }
+    json!({"source":"message.usage","values":values})
+}
+
 fn codex(record: &Value) -> Vec<Value> {
     let payload = &record["payload"];
     match (record["type"].as_str(), payload["type"].as_str()) {
+        (Some("token_usage_record"), _) => {
+            usage_event("token_usage_record", None, &payload["thread_token_usage"])
+                .into_iter()
+                .collect()
+        }
+        (Some("event_msg"), Some("token_count")) => {
+            usage_event("token_count", None, &payload["info"]["total_token_usage"])
+                .into_iter()
+                .collect()
+        }
         (Some("session_meta"), _) => {
             vec![json!({"event":"meta","cwd":payload["cwd"],"sessionId":payload["id"]})]
         }
@@ -296,6 +362,11 @@ fn claude(record: &Value) -> Vec<Value> {
     }
     match kind {
         "user" | "assistant" => {
+            if kind == "assistant" {
+                if let Some(id) = payload["id"].as_str() {
+                    events.extend(usage_event("message.usage", Some(id), &payload["usage"]));
+                }
+            }
             if kind == "assistant" && payload["model"].is_string() {
                 events.push(json!({"event":"model","model":payload["model"]}));
             }
@@ -423,14 +494,21 @@ pub fn session(
             serde_json::from_str::<Value>(&body).map_err(|e| e.to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(json!({"steps":timeline(&events),"eventCount":events.len()}))
+    let model = events.iter().rev().find_map(|e| {
+        (e["event"] == "model")
+            .then(|| e["model"].as_str())
+            .flatten()
+    });
+    Ok(
+        json!({"steps":timeline(&events),"eventCount":events.len(),"usage":usage_summary(&events),"model":model}),
+    )
 }
 
 fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     let file = File::open(path).map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    let identity = format!("{}:{}", metadata.dev(), metadata.ino());
+    let identity = format!("3:{}:{}", metadata.dev(), metadata.ino());
     let key = path.to_string_lossy();
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -581,5 +659,18 @@ mod tests {
         assert_eq!(steps[0]["path"], "/tmp/a");
         assert_eq!(steps[0]["output"], "data");
         assert!(!json!(events).to_string().contains("private"));
+    }
+
+    #[test]
+    fn usage_uses_codex_snapshot_once_and_deduplicates_claude() {
+        let codex = [
+            usage_event("token_usage_record", None, &json!({"total_tokens":20})).unwrap(),
+            usage_event("token_count", None, &json!({"total_tokens":30})).unwrap(),
+        ];
+        assert_eq!(usage_summary(&codex)["values"]["total_tokens"], 20);
+        let claude = usage_event("message.usage", Some("m"), &json!({"output_tokens":3})).unwrap();
+        let result = usage_summary(&[claude.clone(), claude]);
+        assert_eq!(result["values"]["output_tokens"], 3);
+        assert!(result["values"]["input_tokens"].is_null());
     }
 }

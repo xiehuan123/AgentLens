@@ -11,6 +11,7 @@ function replay(records, count) {
 const $ = id => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 let localSessions = [], localSteps = [], localKey = null, local = false;
+let localUsage=null, localModel=null;
 let loading = false, refreshing = false, eventCount = null, lastUpdate = null, listTick = 0, selection = 0;
 const display = {active:0, selected:4, failed:false, file:null, unseen:0, timer:null};
 const initialCount = 7;
@@ -113,6 +114,7 @@ function render() {
   const steps=rows(), done=!local && counts[display.active]===logs[display.active].length;
   $('title').textContent=source?.title??'本机会话';
   $('meta').textContent=source ? source.provider+' / '+source.project+' · '+steps.length+' 条记录'+(local?'':' · '+(done?'演示结束':display.timer?'正在播放':'可继续演示')) : '从左侧选择一个会话';
+  if(local && localModel) $('meta').textContent+=' · '+localModel;
   if(local && localKey) $('meta').textContent+=' · '+(lastUpdate?'最近更新 '+lastUpdate.toLocaleTimeString():'暂无新记录');
   $('folders').hidden=!local;
   for(const id of ['play','next','reset'])$(id).hidden=local;
@@ -156,6 +158,22 @@ function render() {
   }
   const key=JSON.stringify([localKey,display.active,steps.find(step=>step.id===display.selected)]);
   if(detailKey!==key){detailKey=key;details(steps);}
+  const usage=$('usage');
+  usage.hidden=!local || !localKey;
+  usage.replaceChildren(node('h2','Token 用量'));
+  if(local && localKey){
+    const values=localUsage?.values??{};
+    const names={input_tokens:'输入',output_tokens:'输出',total_tokens:'总计',cached_input_tokens:'缓存输入',
+      cache_write_input_tokens:'缓存写入',reasoning_output_tokens:'推理输出',cache_read_input_tokens:'缓存读取',
+      cache_creation_input_tokens:'缓存写入'};
+    const fields=localUsage?.source==='message.usage'
+      ? ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens']
+      : ['input_tokens','output_tokens','total_tokens','cached_input_tokens','cache_write_input_tokens','reasoning_output_tokens'];
+    usage.append(node('small',localUsage ? '会话 · '+localUsage.source : '会话 · 未知来源'));
+    const dl=node('dl');
+    for(const field of fields)dl.append(node('dt',names[field]),node('dd',values[field]?.toLocaleString()??'未知'));
+    usage.append(dl);
+  }
   updateJump();
 }
 function advance(){
@@ -178,14 +196,14 @@ $('timeline').addEventListener('scroll',()=>{if(atBottom()&&display.unseen){disp
 async function selectLocal(key) {
   const generation=++selection;
   localKey=key;
-  localSteps=[];
+  localSteps=[];localUsage=null;localModel=null;
   eventCount=null;lastUpdate=null;loading=true;
   Object.assign(display,{selected:null,file:null,failed:false,unseen:0});
   render();
   try {
     const session=await invoke('read_session',{key});
     if(!local || selection!==generation)return;
-    localSteps=session.steps;eventCount=session.eventCount;
+    localSteps=session.steps;eventCount=session.eventCount;localUsage=session.usage;localModel=session.model;
     render();
     goBottom();
   } catch(error) {
@@ -197,7 +215,7 @@ $('mode').onclick=async()=>{
   local=!local;
   selection++;loading=false;eventCount=null;lastUpdate=null;listTick=0;
   localKey=null;
-  localSteps=[];
+  localSteps=[];localUsage=null;localModel=null;
   Object.assign(display,{selected:local?null:4,file:null,failed:false,unseen:0});
   $('mode').textContent=local?'切换演示':'浏览本机会话';
   $('mode-label').textContent=local?'本机会话':'演示模式 · 模拟日志';
@@ -231,7 +249,7 @@ setInterval(async()=>{
       if(session.eventCount!==eventCount || JSON.stringify(session.steps)!==JSON.stringify(localSteps)){
         const follow=atBottom();
         const added=Math.max(0,session.steps.length-localSteps.length);
-        eventCount=session.eventCount;localSteps=session.steps;lastUpdate=new Date();
+        eventCount=session.eventCount;localSteps=session.steps;localUsage=session.usage;localModel=session.model;lastUpdate=new Date();
         if(!follow)display.unseen+=added;
         render();
         if(follow)goBottom();
