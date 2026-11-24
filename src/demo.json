@@ -1,0 +1,178 @@
+[
+  [
+    {
+      "id": 1,
+      "kind": "消息",
+      "title": "修复失败的检查，并重新运行验证。",
+      "state": "已记录"
+    },
+    {
+      "id": 10,
+      "kind": "读取",
+      "title": "package.json",
+      "path": "package.json",
+      "content": "{ \"scripts\": { \"build\": \"tsc --noEmit\" } }",
+      "state": "成功"
+    },
+    {
+      "id": 11,
+      "kind": "读取",
+      "title": "tsconfig.json",
+      "path": "tsconfig.json",
+      "content": "{ \"compilerOptions\": { \"strict\": true } }",
+      "state": "成功"
+    },
+    {
+      "id": 12,
+      "kind": "读取",
+      "title": "src/index.ts",
+      "path": "src/index.ts",
+      "content": "import { config } from \"./config\";",
+      "state": "成功"
+    },
+    {
+      "id": 2,
+      "kind": "读取",
+      "title": "src/config.ts",
+      "path": "src/config.ts",
+      "content": "export const config = { port: 3000 };",
+      "state": "成功"
+    },
+    {
+      "id": 3,
+      "kind": "修改",
+      "title": "src/config.ts",
+      "path": "src/config.ts",
+      "patch": "- port: 3000\n+ port: \"3000\"",
+      "state": "成功"
+    },
+    {
+      "id": 4,
+      "kind": "命令",
+      "title": "npm run build",
+      "command": "npm run build",
+      "path": "src/config.ts",
+      "output": "src/config.ts(8,3): error TS2322: Type 'string' is not assignable to type 'number'.",
+      "exit": 1,
+      "state": "失败"
+    },
+    {
+      "id": 5,
+      "kind": "修改",
+      "title": "src/config.ts",
+      "path": "src/config.ts",
+      "patch": "- port: \"3000\"\n+ port: 3000",
+      "state": "等待结果"
+    },
+    {
+      "target": 5,
+      "result": {
+        "state": "成功",
+        "output": "已写入 1 个文件"
+      }
+    },
+    {
+      "id": 6,
+      "kind": "命令",
+      "title": "npm run build",
+      "command": "npm run build",
+      "state": "等待结果"
+    },
+    {
+      "target": 6,
+      "result": {
+        "state": "成功",
+        "exit": 0,
+        "output": "Checks passed."
+      }
+    }
+  ],
+  [
+    {
+      "id": 1,
+      "kind": "消息",
+      "title": "修复失败的检查，并重新运行验证。",
+      "state": "已记录"
+    },
+    {
+      "id": 10,
+      "kind": "读取",
+      "title": "package.json",
+      "path": "package.json",
+      "content": "{ \"scripts\": { \"build\": \"tsc --noEmit\" } }",
+      "state": "成功"
+    },
+    {
+      "id": 11,
+      "kind": "读取",
+      "title": "tsconfig.json",
+      "path": "tsconfig.json",
+      "content": "{ \"compilerOptions\": { \"strict\": true } }",
+      "state": "成功"
+    },
+    {
+      "id": 12,
+      "kind": "读取",
+      "title": "src/index.ts",
+      "path": "src/index.ts",
+      "content": "import { config } from \"./config\";",
+      "state": "成功"
+    },
+    {
+      "id": 2,
+      "kind": "读取",
+      "title": "src/settings.ts",
+      "path": "src/settings.ts",
+      "content": "export const config = { port: 3000 };",
+      "state": "成功"
+    },
+    {
+      "id": 3,
+      "kind": "修改",
+      "title": "src/settings.ts",
+      "path": "src/settings.ts",
+      "patch": "- port: 3000\n+ port: \"3000\"",
+      "state": "成功"
+    },
+    {
+      "id": 4,
+      "kind": "命令",
+      "title": "npm test",
+      "command": "npm test",
+      "path": "src/settings.ts",
+      "output": "src/settings.ts(8,3): error TS2322: Type 'string' is not assignable to type 'number'.",
+      "exit": 1,
+      "state": "失败"
+    },
+    {
+      "id": 5,
+      "kind": "修改",
+      "title": "src/settings.ts",
+      "path": "src/settings.ts",
+      "patch": "- port: \"3000\"\n+ port: 3000",
+      "state": "等待结果"
+    },
+    {
+      "target": 5,
+      "result": {
+        "state": "成功",
+        "output": "已写入 1 个文件"
+      }
+    },
+    {
+      "id": 6,
+      "kind": "命令",
+      "title": "npm test",
+      "command": "npm test",
+      "state": "等待结果"
+    },
+    {
+      "target": 6,
+      "result": {
+        "state": "成功",
+        "exit": 0,
+        "output": "Checks passed."
+      }
+    }
+  ]
+]
