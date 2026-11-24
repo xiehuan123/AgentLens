@@ -486,13 +486,45 @@ fn usage_summary(events: &[Value]) -> Value {
     json!({"source":"message.usage","values":values})
 }
 
+fn diagnostic(event: &str, kind: &str, state: &str, payload: &Value) -> Value {
+    let error = &payload["error"];
+    let reason = [
+        payload["reason"].as_str(),
+        payload["message"].as_str(),
+        error["message"].as_str(),
+        error["reason"].as_str(),
+        error.as_str(),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|text| !text.is_empty());
+    let code = [
+        &payload["code"],
+        &error["code"],
+        &payload["codex_error_info"],
+        &error["codex_error_info"],
+    ]
+    .into_iter()
+    .find(|value| !value.is_null())
+    .and_then(string);
+    json!({"event":event,"diagnostic":kind,"state":state,"reason":reason,"errorCode":code,
+        "responseId":payload["response_id"],"requestId":payload["request_id"],"durationMs":payload["duration_ms"]})
+}
+
 fn codex(record: &Value) -> Vec<Value> {
     let payload = &record["payload"];
     match (record["type"].as_str(), payload["type"].as_str()) {
         (Some("token_usage_record"), _) => {
-            usage_event("token_usage_record", None, &payload["thread_token_usage"])
-                .into_iter()
-                .collect()
+            let mut events: Vec<_> =
+                usage_event("token_usage_record", None, &payload["thread_token_usage"])
+                    .into_iter()
+                    .collect();
+            if let Some(id) = payload["response_id"].as_str().filter(|id| !id.is_empty()) {
+                let mut response = diagnostic("diagnostic", "model_response", "已记录", payload);
+                response["responseId"] = json!(id);
+                events.push(response);
+            }
+            events
         }
         (Some("event_msg"), Some("token_count")) => {
             usage_event("token_count", None, &payload["info"]["total_token_usage"])
@@ -544,7 +576,9 @@ fn codex(record: &Value) -> Vec<Value> {
             });
             vec![
                 json!({"event":"result","call":payload["call_id"],"output":output_text,"exit":exit,
-                "failed":exit.map(|code| code != 0),"child":child_id(output)}),
+                "failed":exit.map(|code| code != 0).or_else(||output["isError"].as_bool()),
+                "reason":output["error"]["message"].as_str().or(output["error"].as_str()),
+                "errorCode":string(&output["error"]["code"]),"child":child_id(output)}),
             ]
         }
         (Some("event_msg"), Some("patch_apply_end")) => {
@@ -556,7 +590,26 @@ fn codex(record: &Value) -> Vec<Value> {
                 json!({"event":"result","call":payload["call_id"],"output":payload["stdout"],"failed":payload["success"].as_bool().map(|ok| !ok),"paths":paths}),
             ]
         }
-        (Some("event_msg"), Some("task_complete" | "turn_aborted")) => vec![json!({"event":"end"})],
+        (Some("event_msg"), Some("task_started" | "turn_started")) => {
+            vec![diagnostic("diagnostic", "task_started", "已记录", payload)]
+        }
+        (Some("event_msg"), Some("turn_aborted")) => {
+            vec![diagnostic("end", "turn_aborted", "已中止", payload)]
+        }
+        (Some("event_msg"), Some("task_complete" | "turn_complete")) => {
+            let state = if payload["error"].is_null() {
+                "已记录"
+            } else {
+                "失败"
+            };
+            vec![diagnostic("end", "task_complete", state, payload)]
+        }
+        (Some("event_msg"), Some("stream_error")) => {
+            vec![diagnostic("diagnostic", "stream_error", "失败", payload)]
+        }
+        (Some("event_msg"), Some("error")) => {
+            vec![diagnostic("diagnostic", "session_error", "失败", payload)]
+        }
         (Some("response_item"), Some("reasoning")) => Vec::new(),
         _ => vec![
             json!({"event":"unknown","type":payload["type"].as_str().or(record["type"].as_str())}),
@@ -615,6 +668,17 @@ fn parse(provider: Provider, record: &Value) -> Vec<Value> {
         Provider::Claude => claude(record),
     };
     for event in &mut events {
+        if provider == Provider::Codex {
+            let payload = &record["payload"];
+            if let Some(id) = payload["turn_id"].as_str().or_else(|| {
+                payload["internal_chat_message_metadata_passthrough"]["turn_id"].as_str()
+            }) {
+                event["turnId"] = json!(id);
+            }
+            if let Some(root) = payload["root_turn_id"].as_str() {
+                event["rootTurnId"] = json!(root);
+            }
+        }
         event["time"] = if record["timestamp"].is_null() && event["event"] == "evidence" {
             record["payload"]["completed_at_ms"].clone()
         } else {
@@ -731,7 +795,7 @@ fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), St
     use std::os::unix::fs::MetadataExt;
     let file = File::open(path).map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    let identity = format!("4:{}:{}", metadata.dev(), metadata.ino());
+    let identity = format!("5:{}:{}", metadata.dev(), metadata.ino());
     let key = path.to_string_lossy();
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -792,6 +856,15 @@ fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), St
     tx.commit().map_err(|e| e.to_string())
 }
 
+fn diagnostic_step(event: &Value, id: usize, round: usize) -> Value {
+    let mut step = event.clone();
+    step["id"] = json!(id);
+    step["round"] = json!(round);
+    step["kind"] = json!("事件");
+    step["title"] = event["diagnostic"].clone();
+    step
+}
+
 fn timeline(events: &[Value]) -> Vec<Value> {
     let mut steps: Vec<Value> = Vec::new();
     let mut calls = BTreeMap::new();
@@ -807,13 +880,38 @@ fn timeline(events: &[Value]) -> Vec<Value> {
         .collect();
     let mut round = 1;
     let mut started = false;
+    let mut turn_rounds = BTreeMap::new();
+    let mut latest_round = 1;
+    let mut seen_responses = std::collections::HashSet::new();
     for event in events {
+        let explicit_turn = event["turnId"].as_str();
+        let event_round = if let Some(turn) = explicit_turn {
+            *turn_rounds.entry(turn).or_insert_with(|| {
+                if started {
+                    latest_round += 1;
+                }
+                started = true;
+                round = latest_round;
+                round
+            })
+        } else {
+            round
+        };
         match event["event"].as_str() {
             Some("end") => {
                 for step in &mut steps {
-                    if step["round"] == round && step["state"] == "等待结果" {
+                    if step["round"] == event_round && step["state"] == "等待结果" {
                         step["state"] = json!("未记录结果");
                     }
+                }
+                if event["diagnostic"].is_string() {
+                    steps.push(diagnostic_step(event, steps.len()+1, event_round));
+                }
+            }
+            Some("diagnostic") => {
+                if event["diagnostic"] != "model_response" || seen_responses.insert(
+                    (event["turnId"].as_str(),event["responseId"].as_str())) {
+                    steps.push(diagnostic_step(event, steps.len()+1,event_round));
                 }
             }
             Some("result") => {
@@ -831,17 +929,19 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                         step["child"] = event["child"].clone();
                     }
                     if !event["output"].is_null() { step["output"] = event["output"].clone(); }
-                    if !event["exit"].is_null() { step["exit"] = event["exit"].clone(); }
+                    for field in ["exit", "reason", "errorCode"] {
+                        if !event[field].is_null() { step[field] = event[field].clone(); }
+                    }
                 } else {
-                    steps.push(json!({"id":steps.len()+1,"round":round,"kind":"结果","title":"未配对的工具结果",
-                        "state":"未知","output":event["output"],"exit":event["exit"],"time":event["time"]}));
+                    steps.push(json!({"id":steps.len()+1,"round":event_round,"kind":"结果","title":"未配对的工具结果",
+                        "state":"未知","call":event["call"],"turnId":event["turnId"],"reason":event["reason"],"errorCode":event["errorCode"],"output":event["output"],"exit":event["exit"],"time":event["time"]}));
                 }
             }
             Some("evidence") if event["call"].as_str().is_some_and(|id|call_ids.contains(id) || calls.contains_key(id)) => (),
             Some("call" | "evidence") => {
                 let mut step = event.clone();
                 step["id"] = json!(steps.len()+1);
-                step["round"] = json!(round);
+                step["round"] = json!(event_round);
                 step["state"] = json!("等待结果");
                 if event["event"] == "evidence" {
                     step["title"] = event["tool"].clone();
@@ -863,15 +963,19 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                 steps.push(step);
             }
             Some("message") => {
-                if event["role"] == "user" {
-                    if started { round += 1; }
+                let message_round = if event["role"] == "user" && explicit_turn.is_none() {
+                    if started && turn_rounds.is_empty() {
+                        latest_round += 1;
+                        round = latest_round;
+                    }
                     started = true;
-                }
+                    round
+                } else { event_round };
                 let content = event["content"].as_str().unwrap_or_default();
-                steps.push(json!({"id":steps.len()+1,"round":round,"kind":"消息","title":content.chars().take(110).collect::<String>(),
+                steps.push(json!({"id":steps.len()+1,"round":message_round,"kind":"消息","turnId":event["turnId"],"title":content.chars().take(110).collect::<String>(),
                     "content":content,"role":event["role"],"state":"已记录","time":event["time"]}));
             }
-            Some("unknown") => steps.push(json!({"id":steps.len()+1,"round":round,"kind":"事件","title":event["type"],"itemType":event["itemType"],"state":"已记录","time":event["time"]})),
+            Some("unknown") => steps.push(json!({"id":steps.len()+1,"round":event_round,"kind":"事件","turnId":event["turnId"],"title":event["type"],"itemType":event["itemType"],"state":"已记录","time":event["time"]})),
             _ => (),
         }
     }
@@ -907,6 +1011,38 @@ mod tests {
             metadata.project("", Path::new("/workspace/project")),
             Some(("nested", "Nested", Some(2)))
         );
+    }
+
+    #[test]
+    fn codex_diagnostics_use_recorded_turns_and_response_ids() {
+        let records = [
+            json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":"Question",
+                "internal_chat_message_metadata_passthrough":{"turn_id":"t1"}}}),
+            json!({"type":"token_usage_record","payload":{"response_id":"r1","turn_id":"t1"}}),
+            json!({"type":"token_usage_record","payload":{"response_id":"r1","turn_id":"t1"}}),
+            json!({"type":"response_item","payload":{"type":"function_call","name":"exec_command",
+                "call_id":"c1","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}}}),
+            json!({"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t1","reason":"interrupted","duration_ms":876}}),
+            json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}),
+            json!({"type":"event_msg","payload":{"type":"stream_error","turn_id":"t2",
+                "message":"Connection closed","codex_error_info":{"responseStreamDisconnected":{"httpStatusCode":502}}}}),
+        ];
+        let events = records
+            .iter()
+            .flat_map(|record| parse(Provider::Codex, record))
+            .collect::<Vec<_>>();
+        let steps = timeline(&events);
+        assert_eq!(steps.len(), 7);
+        assert_eq!(steps[1]["round"], 1);
+        assert_eq!(steps[2]["responseId"], "r1");
+        assert!(steps[2]["requestId"].is_null());
+        assert_eq!(steps[3]["call"], "c1");
+        assert_eq!(steps[3]["state"], "未记录结果");
+        assert_eq!(steps[4]["reason"], "interrupted");
+        assert_eq!(steps[4]["durationMs"], 876);
+        assert_eq!(steps[6]["round"], 2);
+        assert_eq!(steps[6]["reason"], "Connection closed");
     }
 
     #[test]

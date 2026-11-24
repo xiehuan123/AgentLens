@@ -1,5 +1,16 @@
 
 const en = {
+  "模型和轮次":"Model & turns",
+  "已中止":"Aborted",
+  "工具调用 ID":"Tool call ID",
+  "轮次 ID":"Turn ID",
+  "根轮次 ID":"Root turn ID",
+  "模型响应 ID":"Model response ID",
+  "请求 ID":"Request ID",
+  "已记录原因":"Recorded reason",
+  "错误代码或类型":"Error code or type",
+  "耗时":"Duration",
+  "日志未记录原因":"No reason recorded",
   "执行轨迹":"Trajectory",
   "外部工具":"External tool",
   "外部调用信息以日志为准":"External activity shown here is limited to what the tool recorded.",
@@ -274,12 +285,18 @@ function labelStep(step){
       [...String(value).matchAll(/(?:^|[~/.])skills[\/]+([^\/\s"'`]+)\/SKILL\.md\b/g)].map(match=>match[1]))
   )];
   if(refs.length)return {category:'skill',title:refs.join(' · '),explicit:false};
+  if(step.diagnostic)return {category:'model',title:eventName(step)[language==='en'?1:0]};
   if(step.kind==='事件')return {category:'event',title:eventName(step)[language==='en'?1:0]};
   if(step.kind==='消息')return {category:'message',title:step.title};
   const external=step.network || /^(web__|browser__)/.test(namespace) || /^(web_search|WebSearch|WebFetch)$/.test(tool);
   return {category:'tool',external,title:step.command || step.script || step.path || step.title};
 }
 const eventLabels={
+  model_response:['模型响应已记录','Model response recorded','Codex 的用量记录带有响应 ID。','The Codex usage record contains a response ID.'],
+  stream_error:['模型响应流出错','Model stream error','Codex 记录了响应流错误。该轮可能仍会继续。','Codex recorded a response stream error. The turn may continue.'],
+  session_error:['会话运行出错','Session error','Codex 报告了一条运行时错误。','Codex reported a runtime error.'],
+  task_complete:['任务轮次结束','Turn completed','Codex 记录了轮次结束。','Codex recorded the end of a turn.'],
+  turn_aborted:['任务轮次中止','Turn aborted','Codex 记录了轮次中止。','Codex recorded that the turn was aborted.'],
   task_started:['开始任务','Task started','代理开始处理一轮任务。','The agent started a task turn.'],
   additional_tools:['登记可用工具','Tools registered','运行时记录了可用的工具定义。','The runtime recorded available tool definitions.'],
   world_state:['更新运行状态','Runtime state update','运行时记录了一次环境状态。','The runtime recorded an environment state.'],
@@ -297,7 +314,8 @@ function eventName(step){
   const label=[step.itemType,step.title].find(key=>Object.hasOwn(eventLabels,key));
   return label ? eventLabels[label] : [step.title,step.title];
 }
-const filters=[['activity','执行轨迹'],['tool','工具'],['skill','Skills'],['mcp','MCP'],['event','事件'],['message','消息'],['all','全部记录']];
+const filters=[['activity','执行轨迹'],['tool','工具'],['skill','Skills'],['mcp','MCP'],['model','模型和轮次'],['event','事件'],['message','消息'],['all','全部记录']];
+const isActivity = (step,type) => type!=='event' && (type!=='model' || ['失败','已中止'].includes(step.state));
 function renderFilters(steps){
   const bar=$('activity-filter');
   bar.hidden=Boolean(importedChat());
@@ -306,7 +324,7 @@ function renderFilters(steps){
   for(const step of steps){
     const type=labelStep(step).category;
     counts[type]=(counts[type]??0)+1;
-    if(type!=='event')counts.activity++;
+    if(isActivity(step,type))counts.activity++;
   }
   const key=JSON.stringify([language,display.category,counts]);
   if(key===bar.dataset.key)return;
@@ -326,7 +344,7 @@ function details(steps) {
   const info=labelStep(step);
   const heading=info.category==='tool' ? step.tool??step.title : info.title;
   pane.append(node('h2',t(heading)),node('p',stepKind(step)+' · '+t(step.state),step.state==='失败'?'fail':'muted'));
-  if(info.category==='event'){
+  if(info.category==='event'||info.category==='model'){
     const event=eventName(step);
     pane.append(node('p',event[language==='en'?3:2]??t('没有可用的事件说明'),'event-description'));
     pane.append(node('code',[step.title,step.itemType].filter(Boolean).join(' / ')));
@@ -349,6 +367,17 @@ function details(steps) {
     actions.append(filter);
   }
   pane.append(actions);
+  const identifiers=[['工具调用 ID',step.call],['轮次 ID',step.turnId],['根轮次 ID',step.rootTurnId],
+    ['模型响应 ID',step.responseId],['请求 ID',step.requestId],['耗时',typeof step.durationMs==='number'?number(step.durationMs)+' ms':null]];
+  for(const [label,value] of identifiers){
+    if(value==null || value==='')continue;
+    const row=node('p',undefined,'tool-name');
+    row.append(node('span',t(label)+' '),node('code',value));
+    pane.append(row);
+  }
+  if(step.reason)pane.append(section(t('已记录原因'),step.reason,true));
+  else if(step.diagnostic && ['失败','已中止'].includes(step.state))pane.append(node('p',t('日志未记录原因'),'muted tool-name'));
+  if(step.errorCode)pane.append(section(t('错误代码或类型'),step.errorCode,true));
   if(info.external)pane.append(node('p',t('外部调用信息以日志为准'),'event-description'));
   if(step.time)pane.append(node('small',readableTime(step.time),'step-time'));
   if(step.cwd)pane.append(section(t('工作目录'),step.cwd));
@@ -399,8 +428,8 @@ let detailKey='';
 function visibleSteps(steps){
   return steps.filter(step=>{
     const category=labelStep(step).category;
-    return (importedChat() || display.category==='all' || (display.category==='activity' && category!=='event') || category===display.category);
-  }).filter(step=>(!display.failed || step.state==='失败') && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
+    return (importedChat() || display.category==='all' || (display.category==='activity' && isActivity(step,category)) || category===display.category);
+  }).filter(step=>(!display.failed || ['失败','已中止'].includes(step.state)) && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
 }
 function render() {
   const source=local ? localSessions.find(session=>session.key===localKey) : sources[display.active];
@@ -452,12 +481,12 @@ function render() {
         const e=node('button',undefined,'step');
         e.id='step-'+step.id;
         e.onclick=()=>{display.selected=step.id;render();$(e.id)?.focus({preventScroll:true});};
-        const stateClass=({失败:'fail',成功:'ok',等待结果:'wait'})[step.state]??'';
+        const stateClass=({失败:'fail',已中止:'wait',成功:'ok',等待结果:'wait'})[step.state]??'';
         const label=node('span');
         const info=labelStep(step);
         const headline=node('strong',t(info.title??'未知记录'));
         if(info.category==='tool' && (step.command || step.script))headline.className='code-preview';
-        const type=info.category==='skill'?'Skills':info.category==='mcp'?'MCP':info.external?t('外部工具'):stepKind(step);
+        const type=info.category==='skill'?'Skills':info.category==='mcp'?'MCP':info.category==='model'?t('模型和轮次'):info.external?t('外部工具'):stepKind(step);
         label.append(headline,node('small',[type,step.tool && (step.command || step.script)?step.tool:null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
         e.append(node('span',type[0],'icon '+info.category),label,node('span',t(step.state),'state '+stateClass));
         e.setAttribute('aria-pressed',String(step.id===display.selected));
