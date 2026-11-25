@@ -95,7 +95,10 @@
       status=batch.pending?l('部分数据已索引','Partial coverage'):l('本机索引已更新','Local index updated');
       await reload(true);
     }catch(error){status=String(error);}
-    finally{indexing=false;render();}
+    finally{
+      indexing=false;render();
+      if(state.page==='skills'&&state.tab==='evaluations')void evaluationPanel?.refresh();
+    }
   }
   async function page(page,keepList=false){
     token++;
@@ -666,8 +669,8 @@
     if(state.tab==='evaluations'){
       if(evaluationPanel?.item!==item || evaluationPanel?.language!==language){
         const mount=node('div',undefined,'eval-workspace');
-        evaluationPanel={item,language,mount};
-        evaluationUI.candidates(mount,item,openSession);
+        const panel=evaluationUI.candidates(mount,item,openSession,()=>index());
+        evaluationPanel={item,language,mount,refresh:panel.refresh};
       }
       root.append(evaluationPanel.mount);return;
     }

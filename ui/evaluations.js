@@ -27,10 +27,10 @@ const evaluationUI=(()=>{
     };
   }
 
-  function candidates(mount,skill,openSource){
+  function candidates(mount,skill,openSource,syncLogs){
     const list=node('div',undefined,'eval-list'), controls=node('div',undefined,'insight-actions');
-    const message=status(), selected=new Map();
-    let offset=0;
+    const message=status(), drafts=new Map(), selected=new Map();
+    let offset=0, requestNumber=0;
     const project=field(l('Skill 包标识（建议填写仓库或包名）','Skill package ID (repository or package name)'));
     project.input.placeholder='owner/repository';
     const size=node('small');
@@ -49,13 +49,15 @@ const evaluationUI=(()=>{
       size.textContent=selected.size+' '+l('个已选','selected');
       share.disabled=selected.size===0;
     }
-    controls.append(size,share);
+    controls.append(size,share,button(l('同步日志','Sync logs'),action(message,syncLogs)));
     mount.append(node('p',l('自动列出该 Skill 已确认调用的轮次。预览仅在本机显示，贡献内容由你填写或选用。',
       'Confirmed turns for this skill are matched automatically. The preview stays local. Choose what to include in the contribution.'),'muted'),
       project.wrap,controls,message,list);
     async function load(next){
+      const current=++requestNumber;
       try{
         const data=await request('eval_candidates',{path:skill.server||'',name:skill.name,offset:next});
+        if(current!==requestNumber)return;
         offset=data.offset;list.replaceChildren();
         if(!data.items.length)list.append(node('p',l('没有找到此技能的已确认调用。','No confirmed calls were found for this skill.'),'muted'));
         for(const row of data.items){
@@ -65,23 +67,26 @@ const evaluationUI=(()=>{
           card.append(header);
           const proof=node('small',l('调用证据','Invocation evidence')+' · '+row.proof.join(', '));
           const copy=node('pre',row.prompt||l('这条记录没有可匹配的用户请求。','No user request could be matched.'));
-          const draft=selected.get(row.id);
+          const draft=drafts.get(row.id);
           const input=field(l('分享的输入','Shareable input'),draft?.input.value,true);
           const observed=field(l('问题或实际结果','Issue or observed result'),draft?.observed.value,true);
+          card.open=draft?.card.open??false;
+          const fields={row,input:input.input,observed:observed.input,card};
+          drafts.set(row.id,fields);
           const label=node('label',undefined,'eval-checkbox');
-          const check=node('input');check.type='checkbox';check.checked=Boolean(draft);
+          const check=node('input');check.type='checkbox';check.checked=selected.has(row.id);
           label.append(check,document.createTextNode(l('加入贡献包','Include in contribution')));
           const bind=()=>{
             if(check.checked&&!selected.has(row.id)&&selected.size>=100){
               check.checked=false;
               message.textContent=l('每个贡献包最多 100 个案例。','A contribution can contain at most 100 cases.');
             }
-            if(check.checked)selected.set(row.id,{row,input:input.input,observed:observed.input});
+            if(check.checked)selected.set(row.id,fields);
             else selected.delete(row.id);
             update();
           };
           check.onchange=bind;
-          if(draft)bind();
+          if(check.checked)bind();
           const notes=node('ul');
           for(const item of row.notes){
             const text=item.kind==='user'?l('同轮用户消息','User message in this turn')+' · '+item.text:
@@ -101,9 +106,10 @@ const evaluationUI=(()=>{
         if(offset) paging.append(button(l('上一页','Previous'),action(message,()=>load(Math.max(0,offset-20)))));
         if(data.more) paging.append(button(l('下一页','Next'),action(message,()=>load(offset+20))));
         list.append(paging);
-      }catch(error){message.textContent=String(error);}
+      }catch(error){if(current===requestNumber)message.textContent=String(error);}
     }
     update();void load(0);
+    return {refresh:()=>load(offset)};
   }
 
   function preview(samples,message){
