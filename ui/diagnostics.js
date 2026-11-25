@@ -2,8 +2,9 @@
   const dialog = $('diagnostics-dialog');
   const tabs = $('diagnostics-tabs');
   const content = $('diagnostics-content');
-  const views = [['failure','失败排查'],['checks','改动与验证'],['usage','Skills 与 MCP'],['export','导出排查包']];
+  const views = [['failure','失败排查'],['checks','改动与验证'],['files','文件操作'],['usage','Skills 与 MCP'],['export','导出排查包']];
   let view, snapshot, round, failureId, reportSession;
+  let fileRound='',fileFilter='',fileSearch='';
   const included = new Set();
   const fields = [
     ['command','命令与脚本', [['实际命令','command'],['提交给工具的脚本','script']]],
@@ -117,6 +118,51 @@
       node('small',t('检查结果以退出码或工具状态为准')));
   }
 
+  const fileLabels={context:'注入上下文',read:'读取文件',create:'创建文件',write:'写入文件',
+    modify:'修改文件',delete:'删除文件',move:'移动或重命名'};
+
+  function renderFiles(){
+    const controls=node('div',undefined,'diagnostic-actions');
+    const search=node('input');search.type='search';search.value=fileSearch;
+    search.placeholder=t('按文件路径搜索');search.setAttribute('aria-label',search.placeholder);
+    const filter=node('select');filter.setAttribute('aria-label',t('文件操作'));
+    const list=node('div',undefined,'diagnostic-file-list');
+    const evidence=(fileRound===''?snapshot:snapshot.filter(step=>String(step.round??1)===fileRound))
+      .flatMap(step=>fileActivity(step).map(action=>({...action,step})));
+    for(const [key,label] of [['','全部操作'],...Object.entries(fileLabels)]){
+      const paths=new Set(evidence.filter(item=>!key||item.operation===key).map(item=>item.path));
+      const option=node('option',t(label)+' · '+number(paths.size));option.value=key;filter.append(option);
+    }
+    filter.value=fileFilter;
+    const draw=()=>{
+      list.replaceChildren();
+      const groups=new Map(),searchText=fileSearch.toLowerCase().trim();
+      for(const item of evidence){
+        const {path,to,operation}=item;
+        if((fileFilter&&operation!==fileFilter)||!(path+' '+to).toLowerCase().includes(searchText))continue;
+        if(!groups.has(path))groups.set(path,[]);
+        groups.get(path).push(item);
+      }
+      if(!groups.size)list.append(node('p',t('没有匹配的文件记录'),'muted'));
+      for(const [path,records] of groups){
+        const group=node('details',undefined,'diagnostic-record');
+        const actions=[...new Set(records.map(item=>t(fileLabels[item.operation])))];
+        group.append(node('summary',path+' · '+actions.join(' / ')+' · '+number(records.length)));
+        const steps=node('ul');
+        for(const item of records){
+          const row=record(item.step);
+          row.prepend(node('small',t(fileLabels[item.operation])+(item.to?' → '+item.to:'')));
+          steps.append(row);
+        }
+        group.append(steps);list.append(group);
+      }
+    };
+    filter.onchange=()=>{fileFilter=filter.value;draw();};
+    search.oninput=()=>{fileSearch=search.value;draw();};
+    controls.append(filter,search);draw();
+    content.append(controls,node('small',t('只显示日志支持的操作。文件操作结果以原步骤状态为准。')),list);
+  }
+
   function renderUsage(steps){
     const groups=new Map();
     for(const step of steps){
@@ -226,17 +272,22 @@
     content.replaceChildren();
     const turns=node('select');
     turns.setAttribute('aria-label',t('选择任务轮次'));
+    if(view==='files'){const all=node('option',t('整个会话'));all.value='';turns.append(all);}
     for(const id of [...new Set(snapshot.map(step=>step.round??1))].reverse()){
       const option=node('option',t('任务轮次')+' '+id);option.value=id;turns.append(option);
     }
-    turns.value=round;
-    turns.onchange=()=>{round=Number(turns.value);failureId=null;renderPanel();};
+    turns.value=view==='files'?fileRound:round;
+    turns.onchange=()=>{
+      if(view==='files')fileRound=turns.value;
+      else{round=Number(turns.value);failureId=null;}
+      renderPanel();
+    };
     content.append(turns);
     const steps=inRound();
-    ({failure:renderFailure,checks:renderChecks,usage:renderUsage,export:renderExport})[view](steps);
+    ({failure:renderFailure,checks:renderChecks,files:renderFiles,usage:renderUsage,export:renderExport})[view](steps);
   }
 
-  $('diagnostics').onclick=()=>{
+  function openDiagnostics(target){
     snapshot=rows().slice();
     const selected=snapshot.find(step=>step.id===display.selected);
     const first=selected?.state==='失败'?selected:failures(snapshot).at(-1);
@@ -246,12 +297,14 @@
     if(reportSession!==session){
       reportSession=session;
       included.clear();
-      enabled.clear();
+      enabled.clear();fileRound='';fileFilter='';fileSearch='';
     }
     const available=new Set(snapshot.map(step=>step.id));
     for(const id of included)if(!available.has(id))included.delete(id);
-    view='failure';
+    view=target;
     renderPanel();
     dialog.showModal();
-  };
+  }
+  $('diagnostics').onclick=()=>openDiagnostics('failure');
+  $('file-activity').onclick=()=>openDiagnostics('files');
 })();

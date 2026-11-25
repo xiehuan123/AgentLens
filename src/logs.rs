@@ -396,6 +396,72 @@ fn codex_call(payload: &Value) -> Value {
     call
 }
 
+fn recorded_file_changes(changes: &Value) -> Vec<Value> {
+    let Some(changes) = changes.as_object() else {
+        return Vec::new();
+    };
+    changes
+        .iter()
+        .map(|(path, change)| {
+            let to = change["move_path"]
+                .as_str()
+                .filter(|value| !value.is_empty());
+            let operation = if to.is_some() {
+                "move"
+            } else {
+                match change["type"].as_str() {
+                    Some("add" | "create") => "create",
+                    Some("delete") => "delete",
+                    _ => "modify",
+                }
+            };
+            json!({"path":path,"to":to,"operation":operation})
+        })
+        .collect()
+}
+
+fn codex_context_files(payload: &Value) -> Vec<String> {
+    let Some(parts) = payload["content"].as_array() else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .enumerate()
+        .filter_map(|(i, part)| {
+            if payload["internal_chat_message_metadata_passthrough"]["content_item_kinds"][i]
+                != "agents_md.instructions"
+            {
+                return None;
+            }
+            let text = part["text"].as_str()?;
+            let directory = text
+                .lines()
+                .next()?
+                .strip_prefix("# AGENTS.md instructions for ")?
+                .trim();
+            let directory = directory.strip_suffix(':').unwrap_or(directory);
+            if !Path::new(directory).is_absolute()
+                && !directory
+                    .as_bytes()
+                    .get(1..3)
+                    .is_some_and(|prefix| matches!(prefix, b":/" | b":\\"))
+            {
+                return None;
+            }
+            let directory = directory.trim_end_matches(['/', '\\']);
+            if directory
+                .rsplit(['/', '\\'])
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case("AGENTS.md"))
+            {
+                Some(directory.to_owned())
+            } else {
+                Some(format!("{directory}/AGENTS.md"))
+            }
+        })
+        .collect()
+}
+
 fn completed_item(payload: &Value) -> Value {
     let item = &payload["item"];
     let kind = item["type"].as_str().unwrap_or("unknown");
@@ -427,6 +493,12 @@ fn completed_item(payload: &Value) -> Value {
             ) =>
         {
             json!({"event":"child_link","call":call,"child":item["receiver_thread_ids"].get(0)})
+        }
+        "FileChange" => {
+            let changes = recorded_file_changes(&item["changes"]);
+            let paths: Vec<_> = changes.iter().map(|change| &change["path"]).collect();
+            json!({"event":"evidence","kind":"修改","tool":"apply_patch","call":call,
+                "paths":paths,"fileChanges":changes,"output":item["stdout"],"reason":item["stderr"],"failed":failed,"outcome":status})
         }
         "WebSearch" => json!({"event":"evidence","call":call,"kind":"工具","tool":"web_search",
             "args":string(&item["action"]).or_else(|| string(&item["query"])),"network":true}),
@@ -572,6 +644,12 @@ fn codex(record: &Value) -> Vec<Value> {
             if matches!(role, "user" | "assistant") {
                 let mut events = message(role, text(&payload["content"]));
                 if role == "user" {
+                    let files = codex_context_files(payload);
+                    if !files.is_empty() {
+                        if let Some(message) = events.first_mut() {
+                            message["contextFiles"] = json!(files);
+                        }
+                    }
                     events.extend(insights::skill_evidence(payload));
                 }
                 events
@@ -623,12 +701,10 @@ fn codex(record: &Value) -> Vec<Value> {
             ]
         }
         (Some("event_msg"), Some("patch_apply_end")) => {
-            let paths = payload["changes"]
-                .as_object()
-                .map(|changes| changes.keys().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
+            let changes = recorded_file_changes(&payload["changes"]);
+            let paths: Vec<_> = changes.iter().map(|change| &change["path"]).collect();
             vec![
-                json!({"event":"result","call":payload["call_id"],"output":payload["stdout"],"failed":payload["success"].as_bool().map(|ok| !ok),"paths":paths}),
+                json!({"event":"result","call":payload["call_id"],"output":payload["stdout"],"failed":payload["success"].as_bool().map(|ok| !ok),"paths":paths,"fileChanges":changes}),
             ]
         }
         (Some("event_msg"), Some("task_started" | "turn_started")) => {
@@ -814,6 +890,10 @@ pub fn session(
     let mut stmt = db
         .prepare("SELECT body, ordinal FROM events WHERE path=?1 ORDER BY ordinal, sub")
         .map_err(|e| e.to_string())?;
+    let mut original = matches!(permitted.get(path), Some((Provider::Codex, _)))
+        .then(|| File::open(path).ok())
+        .flatten()
+        .map(BufReader::new);
     let rows = stmt
         .query_map([key], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -823,6 +903,9 @@ pub fn session(
         .map(|row| {
             let (body, offset) = row.map_err(|e| e.to_string())?;
             let mut event = serde_json::from_str::<Value>(&body).map_err(|e| e.to_string())?;
+            if let Some(original) = &mut original {
+                enrich_cached_file_evidence(&mut event, original, offset);
+            }
             event["sourceOffset"] = json!(offset);
             Ok::<_, String>(event)
         })
@@ -835,6 +918,51 @@ pub fn session(
     Ok(
         json!({"steps":timeline(&events),"eventCount":events.len(),"usage":usage_summary(&events),"model":model}),
     )
+}
+
+fn enrich_cached_file_evidence(event: &mut Value, original: &mut BufReader<File>, offset: i64) {
+    let context = event["event"] == "message"
+        && event["role"] == "user"
+        && event["contextFiles"].is_null()
+        && event["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("# AGENTS.md instructions for "));
+    let file_change = event["event"] == "unknown" && event["itemType"] == "FileChange";
+    let patch_result = event["event"] == "result"
+        && event["fileChanges"].is_null()
+        && event["paths"]
+            .as_array()
+            .is_some_and(|paths| !paths.is_empty());
+    if (!context && !file_change && !patch_result)
+        || offset < 0
+        || original.seek(SeekFrom::Start(offset as u64)).is_err()
+    {
+        return;
+    }
+    let mut line = Vec::new();
+    if original
+        .take(8 * 1024 * 1024)
+        .read_until(b'\n', &mut line)
+        .is_err()
+    {
+        return;
+    }
+    let Ok(raw) = serde_json::from_slice::<Value>(&line) else {
+        return;
+    };
+    if context && raw["type"] == "response_item" {
+        let files = codex_context_files(&raw["payload"]);
+        if !files.is_empty() {
+            event["contextFiles"] = json!(files);
+        }
+    } else if file_change || (patch_result && raw["payload"]["type"] == "patch_apply_end") {
+        if let Some(parsed) = parse(Provider::Codex, &raw)
+            .into_iter()
+            .find(|row| row["fileChanges"].is_array())
+        {
+            *event = parsed;
+        }
+    }
 }
 
 fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), String> {
@@ -1066,12 +1194,12 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                     }
                     if !event["output"].is_null() { step["output"] = event["output"].clone(); }
                     step["resultOffset"] = event["sourceOffset"].clone();
-                    for field in ["exit", "reason", "errorCode"] {
+                    for field in ["exit", "reason", "errorCode", "fileChanges"] {
                         if !event[field].is_null() { step[field] = event[field].clone(); }
                     }
                 } else {
                     steps.push(json!({"id":steps.len()+1,"round":event_round,"kind":"结果","title":"未配对的工具结果",
-                        "state":"未知","sourceOffset":event["sourceOffset"],"call":event["call"],"turnId":event["turnId"],"reason":event["reason"],"errorCode":event["errorCode"],"output":event["output"],"exit":event["exit"],"time":event["time"]}));
+                        "state":"未知","sourceOffset":event["sourceOffset"],"call":event["call"],"turnId":event["turnId"],"reason":event["reason"],"errorCode":event["errorCode"],"output":event["output"],"exit":event["exit"],"time":event["time"],"paths":event["paths"],"fileChanges":event["fileChanges"]}));
                 }
             }
             Some("evidence") if event["call"].as_str().is_some_and(|id|call_ids.contains(id) || calls.contains_key(id)) => (),
@@ -1093,7 +1221,7 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                 } else if event["event"] == "evidence" { Some(event) } else { None };
                 if let Some(source) = source {
                     step["resultOffset"] = source["sourceOffset"].clone();
-                    for field in ["command","cwd","server","exit","output","args","network","durationMs","outcome"] {
+                    for field in ["command","cwd","server","exit","output","args","network","durationMs","outcome","fileChanges","paths","reason"] {
                         if !source[field].is_null() && (field != "args" || step[field].is_null()) {
                             step[field] = source[field].clone();
                         }
@@ -1115,7 +1243,7 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                 } else { event_round };
                 let content = event["content"].as_str().unwrap_or_default();
                 steps.push(json!({"id":steps.len()+1,"round":message_round,"kind":"消息","sourceOffset":event["sourceOffset"],"turnId":event["turnId"],"title":content.chars().take(110).collect::<String>(),
-                    "content":content,"role":event["role"],"state":"已记录","time":event["time"]}));
+                    "content":content,"role":event["role"],"state":"已记录","time":event["time"],"contextFiles":event["contextFiles"]}));
             }
             Some("unknown") => steps.push(json!({"id":steps.len()+1,"round":event_round,"kind":"事件","turnId":event["turnId"],"title":event["type"],"itemType":event["itemType"],"state":"已记录","time":event["time"]})),
             _ => (),
@@ -1271,5 +1399,35 @@ mod tests {
         let result = usage_summary(&[claude.clone(), claude]);
         assert_eq!(result["values"]["output_tokens"], 3);
         assert!(result["values"]["input_tokens"].is_null());
+    }
+
+    #[test]
+    fn file_evidence_keeps_codex_context_injection_distinct_from_recorded_changes() {
+        let message = json!({"type":"response_item","payload":{"type":"message","role":"user",
+                "content":[{"text":"# AGENTS.md instructions for /project\nRuntime context"},
+                           {"text":"# AGENTS.md instructions for /unverified\nMessage text"}],
+                "internal_chat_message_metadata_passthrough":{"content_item_kinds":["agents_md.instructions","user.text"],"turn_id":"turn"}}});
+        let change = json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"turn",
+                "item":{"type":"FileChange","id":"change","status":"completed","changes":{
+                    "/project/before.rs":{"type":"update","move_path":"/project/after.rs"},
+                    "/project/new.rs":{"type":"add"}, "/project/old.rs":{"type":"delete"}}}}});
+        let mut events = parse(Provider::Codex, &message);
+        events.extend(parse(Provider::Codex, &change));
+        let steps = timeline(&events);
+        assert_eq!(steps[0]["contextFiles"], json!(["/project/AGENTS.md"]));
+        assert_eq!(
+            steps[1]["fileChanges"][0],
+            json!({"path":"/project/before.rs","to":"/project/after.rs","operation":"move"})
+        );
+        assert_eq!(steps[1]["fileChanges"][1]["operation"], "create");
+        assert_eq!(steps[1]["fileChanges"][2]["operation"], "delete");
+        assert_eq!(steps[1]["state"], "成功");
+
+        let mut old = events[0].clone();
+        old.as_object_mut().unwrap().remove("contextFiles");
+        let seed = tempfile::NamedTempFile::new().unwrap();
+        fs::write(seed.path(), format!("{message}\n")).unwrap();
+        enrich_cached_file_evidence(&mut old, &mut BufReader::new(seed.reopen().unwrap()), 0);
+        assert_eq!(old["contextFiles"], steps[0]["contextFiles"]);
     }
 }

@@ -1,5 +1,19 @@
 
 const en = {
+  "文件操作":"File activity",
+  "读取文件":"Read",
+  "写入文件":"Write",
+  "修改文件":"Edit",
+  "创建文件":"Create",
+  "删除文件":"Delete",
+  "移动或重命名":"Move or rename",
+  "注入上下文":"Context injection",
+  "全部操作":"All actions",
+  "整个会话":"Entire session",
+  "按文件路径搜索":"Search file paths",
+  "没有匹配的文件记录":"No matching file records",
+  "只显示日志支持的操作。文件操作结果以原步骤状态为准。":"Shows actions supported by the logs. Check the source step for the recorded outcome.",
+
   "评估集":"Evaluations",
   "会话记录":"Sessions",
   "执行分析":"Insights",

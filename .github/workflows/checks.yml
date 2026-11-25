@@ -20,6 +20,7 @@ jobs:
         run: |
           node --check ui/app.js
           node --check ui/diagnostics.js
+          node --check ui/file-activity.js
           node --check ui/requests.js
           node --check ui/trace.js
           node --check ui/insights.js
