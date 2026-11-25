@@ -5,6 +5,9 @@
   const l=(cn,en)=>language==='en'?en:cn;
   const call=(action,input={})=>invoke('agent_insights',{action,input});
   const triggerLabel=key=>({explicit:l('主动','Explicit'),implicit:l('被动','Implicit'),unknown:l('未知','Unknown'),candidate:l('候选证据','Candidate')})[key]??key;
+  const proofLabel=key=>({user_request:l('用户明确指定','User requested this skill'),assistant_selection:l('AI 声明使用','Agent declared use'),
+    skill_file_read:l('已读取技能内容','Skill content was read'),skill_file_reference:l('引用技能文件','Skill file referenced'),
+    user_selection:l('用户从选择器指定','User selected this skill'),selected_instructions:l('运行器注入技能内容','Skill content was injected')})[key]??key;
   const outcomeLabel=key=>({success:l('成功','Succeeded'),failure:l('失败','Failed'),declined:l('拒绝','Declined'),unknown:l('未知','Unknown')})[key]??key;
   const day=86400;
   const date=value=>value==null?'—':readableTime(value*1000);
@@ -156,7 +159,7 @@
       const tr=node('tr');
       const caption=row.category==='mcp'?row.server+' / '+row.name:row.name;
       const details=node('details');details.append(node('summary',(row.category==='mcp'?outcomeLabel(row.outcome):triggerLabel(row.trigger))+' · '+row.confidence));
-      const proof=(row.evidence??[]).map(item=>[item.kind,item.byteOffset!=null?'@'+item.byteOffset:null,
+      const proof=(row.evidence??[]).map(item=>[proofLabel(item.kind),item.byteOffset!=null?'@'+item.byteOffset:null,
         item.resultOffset!=null?'→ @'+item.resultOffset:null,item.callId].filter(Boolean).join(' ')).join('\n');
       details.append(node('pre',proof));
       if(row.category==='mcp'){
@@ -440,10 +443,13 @@
   function studioItems(skill){
     const data=state.data;
     if(skill){
-      const items=new Map(data.skills.map(entry=>[entry.path,{...entry,key:entry.path,server:entry.path,count:0,last:0,rows:[]}]));
-      for(const record of groups(skillGroup(),bySkill)){
+      const items=new Map(data.skills.map(entry=>[entry.path,{...entry,key:entry.path,server:entry.path,count:0,candidates:0,last:0,rows:[]}]));
+      for(const record of groups(data.groups.filter(row=>row.category==='skill'),bySkill)){
         const entry=items.get(record.key)??{path:record.key,present:false,scope:'historical'};
-        items.set(record.key,{...entry,...record});
+        const candidates=sum(record.rows.filter(row=>row.trigger==='candidate'));
+        const calls=record.rows.filter(confirmed);
+        items.set(record.key,{...entry,...record,count:sum(calls),candidates,
+          last:calls.reduce((latest,row)=>Math.max(latest,row.latest??0),0)});
       }
       return [...items.values()];
     }
@@ -462,11 +468,16 @@
     const box=node('div',undefined,'studio-summary');
     const active=items.filter(item=>item.count>0);
     const initial=skill?items.filter(item=>item.present):items.filter(item=>item.configs.length);
-    const third=skill?initial.filter(item=>!item.count):items.filter(item=>item.failure>0);
+    if(skill) box.classList.add('studio-skill-summary');
     const values=[
       [skill?l('已发现技能','Discovered skills'):l('已配置服务','Configured servers'),initial.length,'configured'],
       [l('当前范围内有调用','Used in this range'),active.length,'used'],
-      [skill?l('当前范围内未观察到使用','No observed use in range'):l('有失败或拒绝的服务','Servers with failures or declines'),third.length,skill?'unused':'failed']
+      ...(skill?[
+        [l('有候选使用证据','With candidate evidence'),items.filter(item=>item.candidates>0).length,'candidate'],
+        [l('当前范围内未观察到使用','No observed use in range'),initial.filter(item=>!item.count&&!item.candidates).length,'unused']
+      ]:[
+        [l('有失败或拒绝的服务','Servers with failures or declines'),items.filter(item=>item.failure>0).length,'failed']
+      ])
     ];
     for(const [label,count,key] of values){
       const card=button('',()=>studioFilter('usage',state.usage===key?'':key),state.usage===key);
@@ -504,7 +515,8 @@
     const rows=studioItems(isSkill).filter(item=>{
       if(state.usage==='configured'&&!(isSkill?item.present:item.configs.length))return false;
       if(state.usage==='used'&&!item.count)return false;
-      if(state.usage==='unused'&&(!item.present||item.count))return false;
+      if(state.usage==='candidate'&&!item.candidates)return false;
+      if(state.usage==='unused'&&(!item.present||item.count||item.candidates))return false;
       if(state.usage==='failed'&&!item.failure)return false;
       if(isSkill&&((state.scope&&state.scope!==item.scope)||(state.origin&&state.origin!==item.origin)))return false;
       const labels=isSkill?[item.name,item.path,item.description]:[item.name,...item.rows.map(row=>row.name)];
@@ -524,7 +536,7 @@
       return;
     }
     const columns=isSkill?
-      [l('技能','Skill'),l('作用域','Scope'),l('已确认调用','Confirmed calls'),l('最近使用','Last used')]:
+      [l('技能','Skill'),l('作用域','Scope'),l('调用证据','Invocation evidence'),l('最近确认调用','Last confirmed call')]:
       [l('服务','Server'),l('配置状态','Status'),l('调用 / 失败与拒绝','Calls / failures'),l('最近使用','Last used')];
     const table=node('table',undefined,'studio-table');
     const head=node('tr');
@@ -550,7 +562,7 @@
         if(transports.length)source.append(node('small',transports.join(' · ')));
       }
       const calls=node('td',undefined,'studio-calls');
-      calls.append(node('strong',number(item.count)));
+      calls.append(node('strong',number(item.count)+(isSkill?' '+l('已确认','confirmed'):'')));
       if(isSkill&&item.count){
         const explicit=sum(item.rows.filter(entry=>entry.trigger==='explicit'));
         const implicit=sum(item.rows.filter(entry=>entry.trigger==='implicit'));
@@ -558,6 +570,7 @@
       }else if(!isSkill&&item.failure){
         calls.append(node('small',number(item.failure)+' '+l('失败或拒绝','failed or declined'),'studio-failed'));
       }
+      if(isSkill&&item.candidates)calls.append(node('small',number(item.candidates)+' '+l('条候选证据','candidate records')));
       row.append(title,source,calls,node('td',date(item.last||null),'studio-date'));
       body.append(row);
     }
@@ -665,6 +678,8 @@
       return;
     }
     if(state.tab==='invocations'||state.tab==='errors'){
+      if(skill&&data.groups.some(row=>row.trigger==='candidate'))root.append(node('p',
+        l('候选证据记录了技能文件或脚本的引用，当前证据不足以确认调用。可以打开原会话核对。','Candidate evidence records skill file or script references. Open the source session to verify the evidence.'),'muted'));
       root.append(activities(names[state.tab],data.activity,true));return;
     }
     if(state.tab==='evaluations'){

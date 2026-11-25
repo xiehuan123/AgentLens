@@ -952,7 +952,9 @@ fn ingest_batch(
     if !reached_limit
         && (original_cursor != cursor
             || checkpoint.is_none_or(|(previous, _, failed, stamp, _, _)| {
-                previous != cursor as i64 || failed || stamp != insights::stamp(&metadata)
+                previous != cursor as i64
+                    || failed
+                    || stamp != insights::projection_stamp(&metadata)
             }))
     {
         tx.execute_batch("SAVEPOINT insights_projection")
@@ -964,7 +966,7 @@ fn ingest_batch(
             &cwd,
             cursor,
             parse_errors,
-            &insights::stamp(&metadata),
+            &insights::projection_stamp(&metadata),
             (first_time, last_time),
         )
         .is_ok()

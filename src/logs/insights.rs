@@ -151,10 +151,119 @@ pub(super) fn stamp(meta: &std::fs::Metadata) -> String {
     format!("{}:{}:{}", super::file_identity(meta), meta.len(), nanos)
 }
 
+pub(super) fn projection_stamp(meta: &std::fs::Metadata) -> String {
+    format!("skill-attribution-v1:{}", stamp(meta))
+}
+
+fn normalize_skill_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    if let Some(relative) = path.strip_prefix("~/") {
+        return super::user_home()
+            .join(relative)
+            .to_string_lossy()
+            .replace('\\', "/");
+    }
+    path
+}
+
+fn declares_skill(text: &str, name: &str, user: bool) -> bool {
+    let line = text.trim_start();
+    if line.starts_with(['#', '<', '>']) {
+        return false;
+    }
+    let text = line.lines().next().unwrap_or_default().to_lowercase();
+    let name = name.to_lowercase();
+    let cues: &[&str] = if user {
+        &[
+            "用",
+            "使用",
+            "请用",
+            "请使用",
+            "调用",
+            "请调用",
+            "please use ",
+            "use ",
+            "invoke ",
+            "apply ",
+            "$",
+        ]
+    } else {
+        &[
+            "会用 ",
+            "我用 ",
+            "会使用 ",
+            "将使用 ",
+            "正用 ",
+            "i will use ",
+            "i'll use ",
+            "i’m using ",
+            "i am using ",
+        ]
+    };
+    let matches_name = |rest: &str| {
+        let rest = rest.trim_start().trim_start_matches(['`', '\'', '"']);
+        let Some(tail) = rest.strip_prefix(&name) else {
+            return false;
+        };
+        !tail.starts_with(|ch: char| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    };
+    if user {
+        cues.iter()
+            .any(|cue| text.strip_prefix(cue).is_some_and(matches_name))
+    } else {
+        cues.iter().any(|cue| {
+            text.match_indices(cue).any(|(start, _)| {
+                !text[..start].ends_with(['不', '没', '未'])
+                    && matches_name(&text[start + cue.len()..])
+            })
+        })
+    }
+}
+
+fn saw_skill_content(step: &Value, name: &str, path: &str) -> bool {
+    if !step["resultOffset"].is_number() || s(step, "call").is_empty() {
+        return false;
+    }
+    let direct_read = matches!(s(step, "tool"), "Read" | "read_file")
+        && normalize_skill_path(s(step, "path")) == path;
+    let command = s(step, "command");
+    let script = s(step, "script");
+    let cat_reads = |command: &str| {
+        command.match_indices("cat ").any(|(start, _)| {
+            let prefix = command[..start].trim_end();
+            if !prefix.is_empty() && !prefix.ends_with([';', '`', '"']) {
+                return false;
+            }
+            command[start + 4..]
+                .split_whitespace()
+                .next()
+                .and_then(skill_path)
+                .is_some_and(|(_, file)| file == path)
+        })
+    };
+    if !direct_read && !cat_reads(command) && !cat_reads(script) {
+        return false;
+    }
+    let mut frontmatter = false;
+    for line in s(step, "output").lines().take(80) {
+        if line.trim() == "---" {
+            frontmatter = !frontmatter;
+        }
+        if frontmatter
+            && line
+                .strip_prefix("name:")
+                .is_some_and(|value| value.trim().trim_matches(['\'', '"']) == name)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn skill_path(value: &str) -> Option<(String, String)> {
     let cleaned =
         value.trim_matches(|ch: char| matches!(ch, '\'' | '"' | '`' | '(' | ')' | ',' | ';'));
-    let path = cleaned.replace('\\', "/");
+    let path = normalize_skill_path(cleaned);
     let root = path.strip_suffix("/SKILL.md")?;
     let name = root.rsplit('/').next()?;
     if name.is_empty() {
@@ -164,9 +273,7 @@ fn skill_path(value: &str) -> Option<(String, String)> {
 }
 
 fn script_reference(value: &str) -> Option<(String, String)> {
-    let normalized = value
-        .trim_matches(['\'', '"', '`', '(', ')', ',', ';'])
-        .replace('\\', "/");
+    let normalized = normalize_skill_path(value.trim_matches(['\'', '"', '`', '(', ')', ',', ';']));
     let (prefix, rest) = normalized.split_once("/skills/")?;
     let (name, resource) = rest.split_once('/')?;
     if name.is_empty() || !resource.starts_with("scripts/") {
@@ -248,6 +355,9 @@ pub(super) fn project_session(
                 SELECT ordinal,sub,body FROM relevant UNION ALL
                 SELECT ordinal,sub,body FROM events WHERE path=?1 AND json_extract(body,'$.event')='result'
                   AND json_extract(body,'$.call') IN (SELECT json_extract(body,'$.call') FROM relevant)
+                UNION ALL SELECT ordinal,sub,body FROM events WHERE path=?1
+                  AND json_extract(body,'$.event')='message'
+                  AND json_extract(body,'$.turnId') IN (SELECT json_extract(body,'$.turnId') FROM relevant)
             ) ORDER BY ordinal,sub")
         .map_err(err)?;
     let events = query
@@ -287,13 +397,18 @@ pub(super) fn project_session(
         std::borrow::Cow::Borrowed(project)
     };
     let mut rows = BTreeMap::new();
+    let mut messages = BTreeMap::<&str, Vec<&Value>>::new();
     for event in &events {
+        let turn = s(event, "turnId");
+        if !turn.is_empty() && event["event"] == "message" {
+            messages.entry(turn).or_default().push(event);
+        }
         if event["event"] == "skill_evidence" {
             record_skill(
                 &mut rows,
                 event,
                 s(event, "skill"),
-                &s(event, "path").replace('\\', "/"),
+                &normalize_skill_path(s(event, "path")),
                 s(event, "trigger"),
                 s(event, "proof"),
                 timestamp(&event["time"]),
@@ -409,15 +524,36 @@ pub(super) fn project_session(
             }
         }
         for (name, path) in paths {
-            record_skill(
-                &mut rows,
-                &step,
-                &name,
-                &path,
-                "candidate",
-                "skill_file_reference",
-                time,
-            );
+            let mut trigger = "candidate";
+            let mut proof = "skill_file_reference";
+            if saw_skill_content(&step, &name, &path) {
+                proof = "skill_file_read";
+                if let Some(turn_messages) = messages.get(s(&step, "turnId")) {
+                    let before = |message: &&&Value| {
+                        message["sourceOffset"].as_i64() <= step["sourceOffset"].as_i64()
+                    };
+                    let declaration = [
+                        ("user", "explicit", "user_request"),
+                        ("assistant", "implicit", "assistant_selection"),
+                    ]
+                    .into_iter()
+                    .find_map(|(role, trigger, proof)| {
+                        turn_messages
+                            .iter()
+                            .filter(before)
+                            .find(|message| {
+                                s(message, "role") == role
+                                    && declares_skill(s(message, "content"), &name, role == "user")
+                            })
+                            .map(|message| (message, trigger, proof))
+                    });
+                    if let Some((message, kind, why)) = declaration {
+                        trigger = kind;
+                        record_skill(&mut rows, message, &name, &path, trigger, why, time);
+                    }
+                }
+            }
+            record_skill(&mut rows, &step, &name, &path, trigger, proof, time);
         }
     }
     tx.execute("DELETE FROM insight_calls WHERE source=?1", [source])
@@ -481,7 +617,7 @@ pub fn index(db: &mut Connection, budget: usize) -> Result<Value, String> {
     for (path, (provider, _)) in paths {
         let Ok(meta) = path.metadata() else { continue };
         let key = path.to_string_lossy();
-        let signature = stamp(&meta);
+        let signature = projection_stamp(&meta);
         if checked.get(key.as_ref()) == Some(&signature) {
             continue;
         }
@@ -715,6 +851,63 @@ mod tests {
         json!({"type":"response_item","timestamp":"2026-11-25T01:00:00Z","payload":{"type":"message","role":"user",
             "content":[{"text":text}],"internal_chat_message_metadata_passthrough":{"turn_id":turn,"content_item_kinds":[kind]}}})
     }
+
+    #[test]
+    fn skill_attribution_requires_matching_message_and_recorded_read_in_same_turn() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("rollout-attribution.jsonl");
+        let mut records = vec![json!({"type":"session_meta","payload":{"id":"attribution"}})];
+        for (turn, user_text, assistant, output) in [
+            (
+                "one",
+                "帮我比较项目",
+                "我会用 research 技能",
+                "---\nname: research\n---\nInstructions",
+            ),
+            (
+                "two",
+                "请使用 research 技能",
+                "我会用 research 技能",
+                "---\nname: research\n---\nInstructions",
+            ),
+            ("three", "整理目录", "我会用 research 技能", "No such file"),
+            (
+                "four",
+                "查看文件",
+                "我不会用 research 技能",
+                "---\nname: research\n---\nInstructions",
+            ),
+        ] {
+            records.push(user(user_text, "user.text", turn));
+            records.push(json!({"type":"response_item","payload":{"type":"message","role":"assistant","turn_id":turn,"content":[{"text":assistant}]}}));
+            records.push(json!({"type":"response_item","payload":{"type":"function_call","name":"exec_command","turn_id":turn,"call_id":turn,"arguments":{"cmd":"cat /example/research/SKILL.md"}}}));
+            records.push(json!({"type":"response_item","payload":{"type":"function_call_output","call_id":turn,"output":output}}));
+        }
+        fs::write(
+            &file,
+            records
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let mut db = super::super::open(&root.path().join("index.sqlite")).unwrap();
+        ingest_batch(&mut db, &file, Provider::Codex, None).unwrap();
+        let data = dashboard(&db, Filter::default()).unwrap();
+        let cases = data["activity"].as_array().unwrap();
+        let trigger = |turn| {
+            cases.iter().find(|row| row["turn"] == turn).unwrap()["trigger"]
+                .as_str()
+                .unwrap()
+        };
+        assert_eq!(trigger("one"), "implicit");
+        assert_eq!(trigger("two"), "explicit");
+        assert_eq!(trigger("three"), "candidate");
+        assert_eq!(trigger("four"), "candidate");
+    }
+
     #[test]
     fn history_deduplicates_skill_evidence_and_mcp_results_across_rollout_copies() {
         let root = tempfile::tempdir().unwrap();
