@@ -1,4 +1,5 @@
 pub mod chatgpt;
+pub mod insights;
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -87,13 +88,13 @@ fn user_home() -> PathBuf {
 #[cfg(unix)]
 fn file_identity(metadata: &fs::Metadata) -> String {
     use std::os::unix::fs::MetadataExt;
-    format!("7:{}:{}", metadata.dev(), metadata.ino())
+    format!("8:{}:{}", metadata.dev(), metadata.ino())
 }
 
 #[cfg(windows)]
 fn file_identity(metadata: &fs::Metadata) -> String {
     use std::os::windows::fs::MetadataExt;
-    format!("7:windows:{}", metadata.creation_time())
+    format!("8:windows:{}", metadata.creation_time())
 }
 
 fn roots() -> Vec<(PathBuf, Provider, bool)> {
@@ -430,7 +431,7 @@ fn completed_item(payload: &Value) -> Value {
         "WebSearch" => json!({"event":"evidence","call":call,"kind":"工具","tool":"web_search",
             "args":string(&item["action"]).or_else(|| string(&item["query"])),"network":true}),
         "McpToolCall" => json!({"event":"evidence","call":call,"kind":"工具","tool":item["tool"],
-            "server":item["server"],"args":string(&item["arguments"]),"output":string(&item["result"]),"durationMs":duration_ms,"outcome":status,"failed":failed.or_else(||item["result"]["isError"].as_bool())}),
+            "server":item["server"],"args":string(&item["arguments"]),"output":string(&item["result"]),"durationMs":duration_ms,"outcome":status,"failed":item["result"]["isError"].as_bool().or(failed)}),
         _ => json!({"event":"unknown","type":"item_completed","itemType":kind}),
     }
 }
@@ -569,7 +570,11 @@ fn codex(record: &Value) -> Vec<Value> {
         (Some("response_item"), Some("message")) => {
             let role = payload["role"].as_str().unwrap_or_default();
             if matches!(role, "user" | "assistant") {
-                message(role, text(&payload["content"]))
+                let mut events = message(role, text(&payload["content"]));
+                if role == "user" {
+                    events.extend(insights::skill_evidence(payload));
+                }
+                events
             } else {
                 Vec::new()
             }
@@ -738,10 +743,11 @@ fn migrate(db: &Connection) -> Result<(), String> {
       path TEXT PRIMARY KEY, cwd TEXT NOT NULL, modified INTEGER NOT NULL,
       provider TEXT NOT NULL, archived INTEGER NOT NULL
     );
-    PRAGMA user_version = 4;",
+    PRAGMA user_version = 5;",
     )
     .map_err(|e| e.to_string())?;
-    chatgpt::migrate(db).map_err(|e| e.to_string())
+    chatgpt::migrate(db).map_err(|e| e.to_string())?;
+    insights::migrate(db).map_err(|e| e.to_string())
 }
 
 pub fn open(db_path: &Path) -> Result<Connection, String> {
@@ -832,6 +838,15 @@ pub fn session(
 }
 
 fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), String> {
+    ingest_batch(db, path, provider, None)
+}
+
+fn ingest_batch(
+    db: &mut Connection,
+    path: &Path,
+    provider: Provider,
+    limit: Option<u64>,
+) -> Result<(), String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
     let identity = file_identity(&metadata);
@@ -852,6 +867,22 @@ fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), St
             },
         )
         .ok();
+    let checkpoint = tx
+        .query_row(
+            "SELECT cursor,errors,failed,stamp,first_time,last_time FROM insight_checkpoints WHERE source=?1",
+            [key.as_ref()],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, bool>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                ))
+            },
+        )
+        .ok();
     let (mut cursor, mut cwd) = match old {
         Some((offset, id, cwd))
             if id == identity && offset >= 0 && offset as u64 <= metadata.len() =>
@@ -864,12 +895,27 @@ fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), St
             (0, String::new())
         }
     };
+    let original_cursor = cursor;
+    let mut parse_errors = checkpoint
+        .as_ref()
+        .filter(|(last, _, _, _, _, _)| *last == cursor as i64)
+        .map_or(0, |(_, errors, _, _, _, _)| (*errors).max(0) as u64);
+    let (mut first_time, mut last_time) = checkpoint
+        .as_ref()
+        .filter(|(previous, _, _, _, _, _)| *previous == cursor as i64)
+        .map(|(_, _, _, _, first, last)| (*first, *last))
+        .unwrap_or_default();
     let mut reader = BufReader::new(file);
     reader
         .seek(SeekFrom::Start(cursor))
         .map_err(|e| e.to_string())?;
     let mut line = Vec::new();
+    let mut reached_limit = false;
     loop {
+        if limit.is_some_and(|limit| cursor - original_cursor >= limit && cursor < metadata.len()) {
+            reached_limit = true;
+            break;
+        }
         line.clear();
         let read = reader
             .read_until(b'\n', &mut line)
@@ -878,6 +924,10 @@ fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), St
             break;
         }
         if let Ok(record) = serde_json::from_slice::<Value>(&line) {
+            if let Some(time) = insights::timestamp(&record["timestamp"]) {
+                first_time = Some(first_time.map_or(time, |first| first.min(time)));
+                last_time = Some(last_time.map_or(time, |last| last.max(time)));
+            }
             for (sub, event) in parse(provider, &record).into_iter().enumerate() {
                 if let Some(path) = event["cwd"].as_str().filter(|_| event["event"] == "meta") {
                     cwd = path.to_owned();
@@ -888,10 +938,50 @@ fn ingest(db: &mut Connection, path: &Path, provider: Provider) -> Result<(), St
                 )
                 .map_err(|e| e.to_string())?;
             }
+        } else {
+            parse_errors += 1;
         }
         cursor += read as u64;
     }
     tx.execute("INSERT INTO sources VALUES (?1,?2,?3,?4) ON CONFLICT(path) DO UPDATE SET cwd=excluded.cwd,cursor=excluded.cursor,identity=excluded.identity",params![key.as_ref(),cwd,cursor as i64,identity]).map_err(|e|e.to_string())?;
+    if reached_limit {
+        tx.execute("INSERT INTO insight_checkpoints(source,cursor,errors,indexed_at,stamp,first_time,last_time) VALUES (?1,?2,?3,0,'',?4,?5)
+          ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor,errors=excluded.errors,stamp='',first_time=excluded.first_time,last_time=excluded.last_time",
+          params![key.as_ref(),cursor as i64,parse_errors as i64,first_time,last_time]).map_err(|e|e.to_string())?;
+    }
+    if !reached_limit
+        && (original_cursor != cursor
+            || checkpoint.is_none_or(|(previous, _, failed, stamp, _, _)| {
+                previous != cursor as i64 || failed || stamp != insights::stamp(&metadata)
+            }))
+    {
+        tx.execute_batch("SAVEPOINT insights_projection")
+            .map_err(|e| e.to_string())?;
+        if insights::project_session(
+            &tx,
+            key.as_ref(),
+            provider,
+            &cwd,
+            cursor,
+            parse_errors,
+            &insights::stamp(&metadata),
+            (first_time, last_time),
+        )
+        .is_ok()
+        {
+            tx.execute_batch("RELEASE insights_projection")
+                .map_err(|e| e.to_string())?;
+        } else {
+            tx.execute_batch("ROLLBACK TO insights_projection; RELEASE insights_projection")
+                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO insight_checkpoints(source,cursor,indexed_at,failed,stamp) VALUES (?1,0,0,1,?2)
+              ON CONFLICT(source) DO UPDATE SET failed=1,stamp=excluded.stamp",
+                [key.as_ref()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -1022,7 +1112,7 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                     round
                 } else { event_round };
                 let content = event["content"].as_str().unwrap_or_default();
-                steps.push(json!({"id":steps.len()+1,"round":message_round,"kind":"消息","turnId":event["turnId"],"title":content.chars().take(110).collect::<String>(),
+                steps.push(json!({"id":steps.len()+1,"round":message_round,"kind":"消息","sourceOffset":event["sourceOffset"],"turnId":event["turnId"],"title":content.chars().take(110).collect::<String>(),
                     "content":content,"role":event["role"],"state":"已记录","time":event["time"]}));
             }
             Some("unknown") => steps.push(json!({"id":steps.len()+1,"round":event_round,"kind":"事件","turnId":event["turnId"],"title":event["type"],"itemType":event["itemType"],"state":"已记录","time":event["time"]})),

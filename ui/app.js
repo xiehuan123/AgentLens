@@ -1,5 +1,12 @@
 
 const en = {
+  "评估集":"Evaluations",
+  "会话记录":"Sessions",
+  "执行分析":"Insights",
+  "Skills 中心":"Skills Studio",
+  "MCP 中心":"MCP Studio",
+  "反馈":"Feedback",
+  "记录反馈":"Record feedback",
   "如何开启 Codex Trace":"Enable Codex Trace",
   "从该终端启动新的 Codex CLI 会话。旧会话不会补录，正在运行的桌面会话不会切换设置。":"Start a new Codex CLI session from this terminal. Past sessions cannot be backfilled. Existing desktop processes keep their settings.",
   "选择生成的会话子目录。生成 state.json 时，请使用录制该包的同一个 Codex 可执行文件。":"Select the generated session subfolder. To produce state.json, use the same Codex executable that recorded the bundle.",
@@ -216,6 +223,7 @@ const sessionTitle = source => source.title ? (local?source.title:t(source.title
 const groupOpen = new Map();
 let sessionDrawKey = '';
 function applyLanguage(){
+  document.dispatchEvent(new Event("agentlens-language"));
   document.documentElement.lang=language==='en'?'en':'zh-CN';
   $('language').textContent=language==='en'?'中文':'English';
   document.querySelectorAll('[data-label]').forEach(e=>{e.textContent=t(e.dataset.label);});
@@ -546,6 +554,13 @@ function details(steps) {
   if(step.patch)pane.append(section(t('补丁'),step.patch,true));
   if(step.content)pane.append(section(step.kind==='消息'?t('消息'):t('读取结果'),step.content,true));
   renderChildSession(pane,step);
+  if(local && !importedChat()){
+    const feedback=node('button',t('记录反馈'));
+    feedback.onclick=()=>document.dispatchEvent(new CustomEvent('insight-feedback',{detail:{
+      source:localKey,turn:step.turnId??'',offset:step.sourceOffset??null
+    }}));
+    pane.append(feedback);
+  }
 }
 let detailKey='';
 function visibleSteps(steps){

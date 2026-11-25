@@ -49,7 +49,7 @@ Codex 本地日志保存的响应 ID 可用于定位已有响应记录。原始�
 在当前版本与标签一致、已提交的 `main` 分支上运行：
 
 ```sh
-./scripts/release.sh v0.1.0
+./scripts/release.sh v0.2.0
 ```
 
 命令会推送主分支和版本标签，GitHub Actions 自动构建 Apple 芯片和 Intel Mac 的应用 ZIP、Windows x64 的 NSIS 安装程序，并把三个包和 SHA-256 校验文件上传到同一个 GitHub Release。私有仓库的下载权限由 GitHub 仓库权限控制。首次发布需要对仓库和 GitHub Actions 工作流有写权限。macOS 包使用临时签名，Windows 安装程序未签名。
@@ -72,3 +72,18 @@ codex
 ```
 
 在 AgentLens 选生成的 Trace 子目录。含 `state.json` 时选择「打开已生成的 Trace」。否则选择「用 Codex 处理 Trace」，再选择**录制该包的同一个 Codex 可执行文件**。AgentLens 会调用本机 `trace-reduce` 并把临时索引写到独立目录，打开后可查看模型尝试和已完整记录的原始 HTTP 请求体或 WebSocket 消息。源包保持只读，原始请求不写入会话 SQLite 或排查包。普通历史日志无法补录。 [Codex Rollout Trace 说明](https://github.com/openai/codex/blob/main/codex-rs/rollout-trace/README.md)
+
+## Agent Insights、Skills Studio 与 MCP Studio
+
+左侧导航打开 **Agent Insights**。首次打开会按批次索引本机记录，覆盖卡片显示已处理范围与错误。默认看近 30 天，可按时间、项目、Agent 来源或证据等级筛选。点击曲线桶、排名或活动可下钻。
+
+- **Skills Studio** 展示检测到的用户、项目、插件和系统文件。按路径区分同名技能。快照使用 SHA-256，覆盖 SKILL.md 和预算内可读的 UTF-8 资源，支持内容预览和快照对比。首次观察时间是 AgentLens 记录时间。
+- **技能调用**使用明确选择和加载作为证据；文件或脚本引用单列候选。历史版本缺少直接关联时显示未知。当日志不能区分同轮重复调用时，同技能、同路径、同轮合并一次。
+- **MCP Studio** 展示可见配置与历史服务，按服务和工具统计成功、失败、拒绝和未知。敏感配置值及调用内容不会进入分析页，打开原会话可核对原始记录。运行状态始终以实际证据为准。
+- **反馈**可以从会话步骤、技能详情及活动记录创建、编辑或删除，保存到本机数据库。Evolution 和 Evaluations 暂时只保留入口。
+
+技术边界及验证方法见 [可行性报告](agent-insights-feasibility.md) 和 [实施进度](agent-insights-progress.md)。
+
+### 从 Skill 的实际使用整理评估集
+
+在「Skills 中心」打开指定 Skill，进入「评估样本」。软件按调用证据关联会话轮次，使用者只需勾选并填写可分享的输入和观察，再预览保存 JSON。作者可在顶部「评估集」导入贡献，审核应触发或不应触发及验收条件，分别导出开发集或金标留出集。同一会话的已审核案例归入同一个集合。缺少明确调用的案例不会出现在确认调用列表。

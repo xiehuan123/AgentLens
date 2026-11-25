@@ -191,6 +191,83 @@ fn close_codex_trace(state: State<'_, OpenTrace>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn agent_insights(
+    app: tauri::AppHandle,
+    action: String,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut db = logs::open(&data_dir(&app)?.join("sessions.sqlite3"))?;
+        match action.as_str() {
+            "scan" => logs::insights::scan(&mut db),
+            "index" => logs::insights::index(&mut db, 8),
+            "rebuild" => {
+                logs::insights::rebuild(&mut db)?;
+                Ok(serde_json::Value::Null)
+            }
+            "query" => logs::insights::dashboard(
+                &db,
+                serde_json::from_value(input).map_err(|e| e.to_string())?,
+            ),
+            "versions" => {
+                logs::insights::versions(&db, input["path"].as_str().ok_or("Skill path required")?)
+            }
+            "eval_candidates" => logs::insights::evaluations::candidates(&db, &input),
+            "eval_library" => logs::insights::evaluations::library(
+                &mut db,
+                input["action"].as_str().unwrap_or("list"),
+                &input["data"],
+            ),
+            "eval_save" => {
+                let dataset = input["kind"] == "dataset";
+                let data = if dataset {
+                    logs::insights::evaluations::library(&mut db, "dataset", &input["data"])?
+                } else {
+                    logs::insights::evaluations::bundle(&input["data"])?
+                };
+                if data["cases"].as_array().is_none_or(|rows| rows.is_empty()) {
+                    return Err("There are no approved cases for this export.".into());
+                }
+                let Some(file) = app
+                    .dialog()
+                    .file()
+                    .add_filter("JSON", &["json"])
+                    .set_file_name(if dataset {
+                        "agentlens-eval-dataset.json"
+                    } else {
+                        "agentlens-eval-cases.json"
+                    })
+                    .blocking_save_file()
+                else {
+                    return Ok(serde_json::Value::Bool(false));
+                };
+                let path = file.into_path().map_err(|e| e.to_string())?;
+                if !path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                {
+                    return Err("Choose a .json file.".into());
+                }
+                std::fs::write(
+                    path,
+                    serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(serde_json::Value::Bool(true))
+            }
+            "feedback" => logs::insights::feedback(
+                &db,
+                input["action"].as_str().unwrap_or("list"),
+                input["item"].clone(),
+            ),
+            _ => Err("Unsupported Insights action".into()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -205,7 +282,8 @@ fn main() {
             trace_configured,
             open_codex_trace,
             read_codex_trace_request,
-            close_codex_trace
+            close_codex_trace,
+            agent_insights
         ])
         .run(tauri::generate_context!())
         .expect("could not start AgentLens");

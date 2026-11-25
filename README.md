@@ -69,7 +69,7 @@ Request a [ChatGPT data export](https://help.openai.com/en/articles/7260999-expo
 From a committed `main` branch with push access to `origin`, run:
 
 ```sh
-./scripts/release.sh v0.1.0
+./scripts/release.sh v0.2.0
 ```
 
 The tag must match both `Cargo.toml` and `tauri.conf.json`. The command pushes `main` and the version tag. GitHub Actions publishes macOS Apple silicon and Intel app ZIPs, a Windows x64 NSIS installer, and SHA-256 checksums to the same Release after all builds succeed. Private repositories keep the Release accessible to users with repository access. These builds use local macOS ad-hoc signing and unsigned Windows installers.
@@ -79,3 +79,11 @@ The tag must match both `Cargo.toml` and `tauri.conf.json`. The command pushes `
 Use **Codex Trace** in AgentLens for recording status and platform-specific instructions. Codex can record new CLI sessions locally when launched with `CODEX_ROLLOUT_TRACE_ROOT` set. In AgentLens, open the generated bundle, or reduce it with the same Codex executable that recorded it.
 
 The viewer lists recorded model attempts, IDs, timings and linked tool calls. Complete outgoing request bodies are loaded on demand from the selected bundle. The view keeps the trace separate from the session database and diagnostics exports. It reflects what the recorder captured, including capture gaps. See [Codex Rollout Trace](https://github.com/openai/codex/blob/main/codex-rs/rollout-trace/README.md).
+
+## Agent Insights and capability studios
+
+Open **Agent Insights** to index local history in batches and explore real Skill and MCP activity by time, project, provider, or evidence confidence. **Skills Studio** discovers scoped SKILL.md files and stores local content snapshots. **MCP Studio** separates configured servers from observed calls and keeps sensitive payloads out of analytics. Add structured feedback from a session step or invocation. See the [Chinese usage guide](docs/zh-CN.md#agent-insightsskills-studio-与-mcp-studio) and the [implementation notes](docs/agent-insights-feasibility.md).
+
+### Build Skill evaluation cases from local sessions
+
+In **Skills Studio**, open a skill and choose **Evaluation cases**. AgentLens matches that skill's confirmed calls and shows their recorded turns. Select cases, prepare shareable inputs and observations, and preview the contribution before saving a JSON file. Authors can import it under **Evaluations**, review the expected trigger and checks, then export development or gold holdout datasets. Contributions are saved locally as files.

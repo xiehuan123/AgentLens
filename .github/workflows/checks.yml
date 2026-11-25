@@ -22,3 +22,5 @@ jobs:
           node --check ui/diagnostics.js
           node --check ui/requests.js
           node --check ui/trace.js
+          node --check ui/insights.js
+          node --check ui/evaluations.js
