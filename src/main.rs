@@ -214,6 +214,27 @@ async fn agent_insights(
                 logs::insights::versions(&db, input["path"].as_str().ok_or("Skill path required")?)
             }
             "eval_candidates" => logs::insights::evaluations::candidates(&db, &input),
+            "eval_sessions" => logs::insights::session_export::list(&db, &input),
+            "eval_sessions_save" => {
+                let Some(file) = app
+                    .dialog()
+                    .file()
+                    .add_filter("JSON", &["json"])
+                    .set_file_name("agentlens-full-sessions.json")
+                    .blocking_save_file()
+                else {
+                    return Ok(serde_json::Value::Bool(false));
+                };
+                let path = file.into_path().map_err(|e| e.to_string())?;
+                if !path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                {
+                    return Err("Choose a .json file.".into());
+                }
+                logs::insights::session_export::save(&db, &input, &path)?;
+                Ok(serde_json::Value::Bool(true))
+            }
             "eval_library" => logs::insights::evaluations::library(
                 &mut db,
                 input["action"].as_str().unwrap_or("list"),

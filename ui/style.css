@@ -181,3 +181,8 @@ main{min-width:0;display:flex;flex-direction:column;position:relative;overflow:h
 .eval-workspace summary{cursor:pointer;font-weight:600}
 .eval-review{padding:9px 0;border-top:1px solid var(--line)}
 .eval-preview{white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:45vh;margin:8px 0}
+.eval-session-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.eval-session-row>*{margin:0}
+.eval-session-label{display:grid;gap:2px;min-width:0;overflow-wrap:anywhere}
+.eval-session-row button{flex:none}
+#session-export-title+ p+ul{max-height:45vh;overflow:auto;overflow-wrap:anywhere}

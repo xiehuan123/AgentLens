@@ -27,6 +27,120 @@ const evaluationUI=(()=>{
     };
   }
 
+  function sharing(mount,skill,openSource,syncLogs){
+    const switches=node('nav',undefined,'studio-tabs');
+    switches.setAttribute('aria-label',l('分享方式','Share options'));
+    const container=node('div',undefined,'eval-workspace');
+    const panels=new Map();
+    let active;
+    const views=[
+      ['sessions',l('完整会话','Full sessions'),sessionPicker],
+      ['cases',l('评估贡献包','Evaluation contribution'),candidates],
+    ];
+    for(const [key,label,render] of views){
+      switches.append(button(label,()=>show(key,render)));
+      switches.lastElementChild.dataset.view=key;
+    }
+    function show(key,render){
+      active=key;
+      if(!panels.has(key)){
+        const panel=node('div',undefined,'eval-workspace');
+        panels.set(key,{panel,controller:render(panel,skill,openSource,syncLogs)});
+      }
+      container.replaceChildren(panels.get(key).panel);
+      for(const control of switches.children)control.setAttribute('aria-pressed',String(control.dataset.view===key));
+    }
+    mount.append(switches,container);
+    show('sessions',sessionPicker);
+    return {refresh:()=>panels.get(active)?.controller.refresh()};
+  }
+
+  function sessionPicker(mount,skill,openSource,syncLogs){
+    const list=node('div',undefined,'eval-list'), controls=node('div',undefined,'insight-actions');
+    const message=status(), count=node('small');
+    const selected=new Map();
+    const max=100;
+    let offset=0, generation=0, choices=[];
+    const identity={path:skill.path||'',name:skill.name};
+    const rowKey=row=>JSON.stringify(row.key);
+    const exportButton=button(l('保存完整会话…','Save full sessions…'),()=>previewSessions(identity,[...selected.values()],message));
+    const markPage=button(l('全选本页','Select this page'),()=>{
+      for(const {row} of choices){
+        if(selected.size===max)break;
+        selected.set(rowKey(row),row);
+      }
+      update();
+      if(choices.some(({row})=>!selected.has(rowKey(row))))message.textContent=l('一次最多保存 100 个会话。','You can save up to 100 sessions at a time.');
+    });
+    const clear=button(l('清空选择','Clear selection'),()=>{selected.clear();update();});
+    function update(){
+      count.textContent=l('已选 '+selected.size+' 个会话','Selected sessions: '+selected.size);
+      exportButton.disabled=clear.disabled=!selected.size;
+      for(const {row,check} of choices)check.checked=selected.has(rowKey(row));
+      markPage.disabled=!choices.some(({check})=>!check.checked)||selected.size===max;
+    }
+    controls.append(count,markPage,clear,exportButton,button(l('同步日志','Sync logs'),action(message,syncLogs)));
+    mount.append(node('p',l('勾选此 Skill 关联的会话，新建一个包含所选会话完整原始日志的 JSON。',
+      'Select linked sessions to save their complete original logs in one JSON file.'),'muted'),controls,message,list);
+    async function load(next){
+      const current=++generation;
+      try{
+        const data=await request('eval_sessions',{...identity,offset:next});
+        if(current!==generation)return;
+        offset=data.offset;choices=[];list.replaceChildren();
+        if(!data.items.length)list.append(node('p',l('没有找到此技能的已确认调用。','No confirmed calls were found for this skill.'),'muted'));
+        for(const row of data.items){
+          const card=node('div',undefined,'insight-box eval-session-row');
+          const label=node('label',undefined,'eval-checkbox');
+          const check=node('input');check.type='checkbox';
+          const summary=node('span',undefined,'eval-session-label');
+          summary.append(node('strong',row.title),node('small',[
+            row.key.provider,row.time?readableTime(row.time*1000):null,row.callCount+' '+l('次调用','calls')
+          ].filter(Boolean).join(' · ')));
+          label.append(check,summary);
+          const id=rowKey(row);
+          check.onchange=()=>{
+            if(check.checked&&selected.size===max&&!selected.has(id)){
+              message.textContent=l('一次最多保存 100 个会话。','You can save up to 100 sessions at a time.');
+            }else if(check.checked)selected.set(id,row);
+            else selected.delete(id);
+            update();
+          };
+          choices.push({row,check});
+          card.append(label,button(l('打开会话','Open session'),()=>openSource(row)));list.append(card);
+        }
+        const paging=node('div',undefined,'insight-actions');
+        if(offset)paging.append(button(l('上一页','Previous'),action(message,()=>load(Math.max(0,offset-20)))));
+        if(data.more)paging.append(button(l('下一页','Next'),action(message,()=>load(offset+20))));
+        list.append(paging);
+        update();
+      }catch(error){if(current===generation)message.textContent=String(error);}
+    }
+    update();void load(0);
+    return {refresh:()=>load(offset)};
+  }
+
+  function previewSessions(identity,sessions,message){
+    const dialog=node('dialog',undefined,'diagnostics-dialog');
+    const content=node('div',undefined,'diagnostics-content');
+    const progress=status();
+    const title=node('h2',l('保存完整会话','Save full sessions'));
+    title.id='session-export-title';dialog.setAttribute('aria-labelledby',title.id);
+    const names=node('ul');
+    for(const item of sessions)names.append(node('li',item.title+' · '+item.key.provider));
+    content.append(title,node('p',l('导出包含会话中记录的所有轮次、消息、工具参数和结果。日志原样保存在本机 JSON，可能包含代码、路径和凭据。请在转发前核对。',
+      'The local JSON includes all recorded turns, messages, tool inputs and results. Original logs may contain code, paths and credentials. Review them before forwarding.')),names,progress);
+    const actions=node('div',undefined,'insight-actions');
+    actions.append(button(l('返回','Back'),()=>dialog.close()),button(l('保存 JSON','Save JSON'),action(progress,async()=>{
+      if(await request('eval_sessions_save',{...identity,sessions:sessions.map(item=>item.key)})){
+        message.textContent=l('已保存 '+sessions.length+' 个完整会话。','Saved '+sessions.length+' full sessions.');
+        dialog.close();
+      }
+    })));
+    content.append(actions);dialog.append(content);document.body.append(dialog);
+    dialog.addEventListener('close',()=>dialog.remove(),{once:true});dialog.showModal();
+  }
+
   function candidates(mount,skill,openSource,syncLogs){
     const list=node('div',undefined,'eval-list'), controls=node('div',undefined,'insight-actions');
     const message=status(), drafts=new Map(), selected=new Map();
@@ -206,5 +320,5 @@ const evaluationUI=(()=>{
     })),message);
     return panel;
   }
-  return {candidates,library};
+  return {sharing,library};
 })();

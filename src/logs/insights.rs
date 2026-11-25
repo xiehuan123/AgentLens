@@ -1,5 +1,6 @@
 pub mod evaluations;
 mod registry;
+pub mod session_export;
 
 use super::{files, ingest_batch, Provider};
 use rusqlite::{params, Connection, Transaction};

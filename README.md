@@ -87,3 +87,5 @@ Open **Agent Insights** to index local history in batches and explore real Skill
 ### Build Skill evaluation cases from local sessions
 
 In **Skills Studio**, open a skill and choose **Evaluation cases**. AgentLens matches that skill's confirmed calls and shows their recorded turns. Select cases, prepare shareable inputs and observations, and preview the contribution before saving a JSON file. Authors can import it under **Evaluations**, review the expected trigger and checks, then export development or gold holdout datasets. Contributions are saved locally as files.
+
+In the same panel, **Full sessions** lets you select multiple linked sessions and save all original records from their source files in one local JSON file. Use **Evaluation contribution** to share edited case drafts instead.

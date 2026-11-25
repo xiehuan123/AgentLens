@@ -685,7 +685,7 @@
     if(state.tab==='evaluations'){
       if(evaluationPanel?.item!==item || evaluationPanel?.language!==language){
         const mount=node('div',undefined,'eval-workspace');
-        const panel=evaluationUI.candidates(mount,item,openSession,()=>index());
+        const panel=evaluationUI.sharing(mount,item,openSession,()=>index());
         evaluationPanel={item,language,mount,refresh:panel.refresh};
       }
       root.append(evaluationPanel.mount);return;
