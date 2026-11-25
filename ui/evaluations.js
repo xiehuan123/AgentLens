@@ -56,7 +56,7 @@ const evaluationUI=(()=>{
     async function load(next){
       const current=++requestNumber;
       try{
-        const data=await request('eval_candidates',{path:skill.server||'',name:skill.name,offset:next});
+        const data=await request('eval_candidates',{path:skill.path||'',name:skill.name,offset:next});
         if(current!==requestNumber)return;
         offset=data.offset;list.replaceChildren();
         if(!data.items.length)list.append(node('p',l('没有找到此技能的已确认调用。','No confirmed calls were found for this skill.'),'muted'));

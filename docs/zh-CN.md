@@ -49,7 +49,7 @@ Codex 本地日志保存的响应 ID 可用于定位已有响应记录。原始�
 在当前版本与标签一致、已提交的 `main` 分支上运行：
 
 ```sh
-./scripts/release.sh v0.2.1
+./scripts/release.sh v0.2.2
 ```
 
 命令会推送主分支和版本标签，GitHub Actions 自动构建 Apple 芯片和 Intel Mac 的应用 ZIP、Windows x64 的 NSIS 安装程序，并把三个包和 SHA-256 校验文件上传到同一个 GitHub Release。私有仓库的下载权限由 GitHub 仓库权限控制。首次发布需要对仓库和 GitHub Actions 工作流有写权限。macOS 包使用临时签名，Windows 安装程序未签名。

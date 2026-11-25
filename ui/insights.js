@@ -29,7 +29,7 @@
   function studioScope(){
     const item=state.selection;
     if(!item)return {};
-    if(state.page==='skills')return {category:'skill',...(item.server?{server:item.server}:{name:item.name})};
+    if(state.page==='skills')return {category:'skill',...(item.path?{server:item.path}:{name:item.name})};
     return {category:'mcp',server:item.name,...(item.tool?{name:item.tool}:{})};
   }
   function query(){
@@ -426,7 +426,7 @@
     if(!state.data)return;
     const chosen=pageName==='skills'?state.data.skills.find(skill=>skill.path===item.server):
       state.data.servers.find(server=>server.name===item.server);
-    state.selection=pageName==='skills'?{...chosen,path:item.server||item.name,name:item.name}:{...chosen,name:item.server,tool:item.key===item.server?null:item.name};
+    state.selection=pageName==='skills'?{...chosen,path:item.server||undefined,name:item.name}:{...chosen,name:item.server,tool:item.key===item.server?null:item.name};
     state.tab='overview';
     state.activityOffset=0;state.drill={};
     root.scrollTop=0;
@@ -661,7 +661,8 @@
     const data=state.data;
     if(state.tab==='content'||state.tab==='versions'){
       const box=sectionBox(names[state.tab]);root.append(box);
-      void showVersions(box,item,state.tab==='versions');return;
+      if(item.path)void showVersions(box,item,state.tab==='versions');else box.append(empty());
+      return;
     }
     if(state.tab==='invocations'||state.tab==='errors'){
       root.append(activities(names[state.tab],data.activity,true));return;

@@ -69,7 +69,7 @@ Request a [ChatGPT data export](https://help.openai.com/en/articles/7260999-expo
 From a committed `main` branch with push access to `origin`, run:
 
 ```sh
-./scripts/release.sh v0.2.1
+./scripts/release.sh v0.2.2
 ```
 
 The tag must match both `Cargo.toml` and `tauri.conf.json`. The command pushes `main` and the version tag. GitHub Actions publishes macOS Apple silicon and Intel app ZIPs, a Windows x64 NSIS installer, and SHA-256 checksums to the same Release after all builds succeed. Private repositories keep the Release accessible to users with repository access. These builds use local macOS ad-hoc signing and unsigned Windows installers.
