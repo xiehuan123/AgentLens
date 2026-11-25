@@ -1,7 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod logs;
-mod store;
 mod trace;
 
 use std::{
@@ -15,11 +14,6 @@ fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
-}
-
-#[tauri::command]
-fn demo_records(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    store::demo(&mut store::open(&data_dir(&app)?.join("demo.sqlite3"))?)
 }
 
 #[tauri::command]
@@ -294,7 +288,6 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(OpenTrace::default())
         .invoke_handler(tauri::generate_handler![
-            demo_records,
             local_sessions,
             read_session,
             choose_folder,

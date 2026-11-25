@@ -10,7 +10,7 @@ Install the Xcode command-line tools, Rust, and Node.js. Then run:
 cargo run --locked
 ```
 
-The synthetic demo provides a reproducible starting point. Put parser regressions in the Rust unit tests using minimal synthetic records. Cite upstream protocol documentation or source code when adding a new format.
+Put parser regressions in the Rust unit tests using minimal synthetic records. Cite upstream protocol documentation or source code when adding a new format.
 
 ## Check your changes
 

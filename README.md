@@ -2,9 +2,9 @@
 
 # AgentLens
 
-[简体中文](docs/zh-CN.md) · [Contributing](CONTRIBUTING.md) · [MIT License](LICENSE)
+[Download for macOS and Windows](https://github.com/xiehuan123/AgentLens/releases/latest) · [简体中文](docs/zh-CN.md) · [Contributing](CONTRIBUTING.md) · [MIT License](LICENSE)
 
-AgentLens is a local-first macOS desktop viewer for Codex and Claude Code execution logs. Follow a session as records are written, replay earlier turns, and inspect a failed command alongside the file edits recorded before it.
+AgentLens is a local-first desktop debugger for Codex and Claude Code. Trace a failed run to the command and files involved, or turn real Skill usage into reviewable evaluation cases. It reads the logs already on your machine.
 
 ## What you can do
 
@@ -29,7 +29,7 @@ Use macOS with Rust, Cargo, and the Xcode command-line tools.
 cargo run --locked
 ```
 
-The app opens in a synthetic demo. Choose **Browse local sessions** to discover real sessions. Use **English** or **中文** in the header to change the interface language. The app remembers the choice.
+AgentLens automatically lists local sessions. Open one from the sidebar, then choose **Inspect session** or **File activity**. If your logs are in a custom location, add that folder in **Folder settings**. Use the language control in the header to switch between English and Chinese.
 
 ## Build a macOS app
 
@@ -44,7 +44,7 @@ Pass `debug` for a faster local build. The script produces a locally signed app 
 
 - Codex uses `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`, with `~/.codex` as the default home.
 - Claude Code uses `$CLAUDE_CONFIG_DIR/projects`, with `~/.claude` as the default config directory. Both sources accept extra log folders selected in the app.
-- Source JSONL is read only. AgentLens writes session data to `~/Library/Application Support/dev.agentlens.desktop/sessions.sqlite3` and uses a separate `demo.sqlite3`. The app makes no log upload requests.
+- Source JSONL is read only. AgentLens writes session data to `~/Library/Application Support/dev.agentlens.desktop/sessions.sqlite3`. The app makes no log upload requests.
 - Recorded tool details and user-visible messages are shown without redaction. The session database can contain source code, secrets printed in logs, and personal data. Internal reasoning content and encrypted fields are excluded from the parsed events.
 - The timeline reflects records the agent saved. A result, a field, or an association can be missing. Usage is derived from recorded token fields.
 
@@ -70,7 +70,7 @@ Request a [ChatGPT data export](https://help.openai.com/en/articles/7260999-expo
 From a committed `main` branch with push access to `origin`, run:
 
 ```sh
-./scripts/release.sh v0.2.2
+./scripts/release.sh v0.3.0
 ```
 
 The tag must match both `Cargo.toml` and `tauri.conf.json`. The command pushes `main` and the version tag. GitHub Actions publishes macOS Apple silicon and Intel app ZIPs, a Windows x64 NSIS installer, and SHA-256 checksums to the same Release after all builds succeed. Private repositories keep the Release accessible to users with repository access. These builds use local macOS ad-hoc signing and unsigned Windows installers.

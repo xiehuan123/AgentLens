@@ -293,7 +293,7 @@
     const first=selected?.state==='失败'?selected:failures(snapshot).at(-1);
     round=(first??selected??snapshot.at(-1))?.round??1;
     failureId=first?.id;
-    const session=local?localKey:'demo:'+display.active;
+    const session=localKey;
     if(reportSession!==session){
       reportSession=session;
       included.clear();

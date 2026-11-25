@@ -85,8 +85,7 @@ main{min-width:0;display:flex;flex-direction:column;position:relative;overflow:h
 #trace-requests code,#trace-dialog p,#trace-requests summary{overflow-wrap:anywhere}
 
 .layout{height:calc(100dvh - 103px)}
-.insight-workspace #mode,.insight-workspace #mode-label{display:none}
-.insight-workspace #language{margin-left:auto}
+#language{margin-left:auto}
 .insight-layout{grid-template-columns:minmax(0,1fr);min-height:0}
 .insight-nav{height:44px;display:flex;align-items:stretch;gap:20px;overflow:auto;padding:0 22px;background:#fff;border-bottom:1px solid var(--line);scrollbar-width:none}
 .insight-nav button,.studio-tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;white-space:nowrap;color:var(--muted);padding:0 6px;font-weight:600}

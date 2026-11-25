@@ -1,6 +1,6 @@
 {
   "productName": "AgentLens",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "identifier": "dev.agentlens.desktop",
   "build": { "frontendDist": "ui" },
   "app": {

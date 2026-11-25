@@ -1,5 +1,8 @@
 
 const en = {
+  "正在查找本机会话…":"Looking for local sessions…",
+  "没有找到本机会话。可在「目录设置」添加日志目录。":"No local sessions found. Add a log folder under Folder settings.",
+
   "文件操作":"File activity",
   "读取文件":"Read",
   "写入文件":"Write",
@@ -152,8 +155,6 @@ const en = {
   "日志未记录参数":"No arguments recorded",
   "参数":"Arguments",
   "没有记录工具输出":"No tool output recorded",
-  "修复构建类型错误": "Fix a build type error",
-  "修复配置解析失败": "Fix config parsing",
   "归档": "Archived",
   "未找到匹配的会话": "No matching sessions",
   "步骤详情": "Step details",
@@ -170,14 +171,9 @@ const en = {
   "展开子会话": "Expand child session",
   "读取中…": "Loading…",
   "本机会话": "Local sessions",
-  "演示结束": "Demo complete",
-  "正在播放": "Playing",
-  "可继续演示": "Ready to play",
   "从左侧选择一个会话": "Select a session on the left",
   "最近更新": "Last updated",
   "暂无新记录": "No new records",
-  "暂停播放": "Pause",
-  "播放后续日志": "Play remaining records",
   "任务轮次": "Turn",
   "未知记录": "Unknown record",
   "没有符合筛选条件的步骤": "No matching steps",
@@ -192,9 +188,6 @@ const en = {
   "会话": "Session",
   "未知来源": "Unknown source",
   "未知": "Unknown",
-  "切换演示": "Switch to demo",
-  "浏览本机会话": "Browse local sessions",
-  "演示模式 · 模拟日志": "Demo mode · Synthetic logs",
   "读取": "Read",
   "修改": "Edit",
   "工具": "Tool",
@@ -210,14 +203,10 @@ const en = {
   "代理来源": "Agent source",
   "所有来源": "All sources",
   "筛选项目": "Filter projects",
-  "单步写入": "Append one record",
-  "重置": "Reset",
   "只看失败": "Failures only",
   "执行时间线": "Execution timeline",
-  "本地演示": "Local demo",
   "添加 Codex 日志目录": "Add Codex log folder",
   "添加 Claude Code 日志目录": "Add Claude Code log folder",
-  "从失败步骤出发，能否快速找到相关修改并看见重跑结果？选一个会话试走一遍。": "Open a failed step to inspect the error and trace earlier edits.",
   "未配对的工具结果": "Unmatched tool result",
   "未知工具": "Unknown tool"
 };
@@ -233,7 +222,7 @@ function readableTime(value, compact=false) {
   if(compact && date.toDateString()===new Date().toDateString())return date.toLocaleTimeString(locale(),time);
   return date.toLocaleString(locale(),{...time,year:compact?undefined:'numeric',month:'short',day:'numeric'});
 }
-const sessionTitle = source => source.title ? (local?source.title:t(source.title)) : t('未命名会话');
+const sessionTitle = source => source.title ? source.title : t('未命名会话');
 const groupOpen = new Map();
 let sessionDrawKey = '';
 function applyLanguage(){
@@ -243,31 +232,18 @@ function applyLanguage(){
   document.querySelectorAll('[data-label]').forEach(e=>{e.textContent=t(e.dataset.label);});
   document.querySelectorAll('[data-aria]').forEach(e=>e.setAttribute('aria-label',t(e.dataset.aria)));
   $('project').placeholder=t('筛选项目');
-  $('mode').textContent=t(local?'切换演示':'浏览本机会话');
-  $('mode-label').textContent=t(local?'本机会话':'演示模式 · 模拟日志');
-}
-const sources = [
-  {provider:'Codex', project:'workspace-web', title:'修复构建类型错误', path:'src/config.ts', command:'npm run build', time:'14:32'},
-  {provider:'Claude Code', project:'inventory-cli', title:'修复配置解析失败', path:'src/settings.ts', command:'npm test', time:'14:19'}
-];
-function replay(records, count) {
-  return records.slice(0,count).reduce((steps, record) => record.target
-    ? steps.map(step => step.id===record.target ? {...step,...record.result} : step)
-    : [...steps,record], []);
 }
 const $ = id => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
-let localSessions = [], localSteps = [], localKey = null, local = false;
+let localSessions = [], localSteps = [], localKey = null;
 let localUsage=null, localModel=null;
+let sessionsLoaded=false;
 let loading = false, refreshing = false, eventCount = null, lastUpdate = null, listTick = 0, selection = 0;
-const display = {active:0, selected:4, failed:false, category:"activity", file:null, unseen:0, timer:null};
-const initialCount = 7;
-const counts = sources.map(() => initialCount);
-let logs = [];
+const display = {selected:null, failed:false, category:"activity", file:null, unseen:0};
 const node = (tag, value, cls) => {const e=document.createElement(tag); if(value!==undefined)e.textContent=value; if(cls)e.className=cls; return e;};
-const importedChat = () => local && localKey?.startsWith('chatgpt-export:');
+const importedChat = () => localKey?.startsWith('chatgpt-export:');
 const stepKind = step => step.role==='user'?t('用户'):step.role==='assistant'?t('助手'):t(step.kind);
-const rows = () => local ? localSteps : replay(logs[display.active], counts[display.active]);
+const rows = () => localSteps;
 const atTop = () => $('timeline').scrollTop<=12;
 function latestPosition(){
   const timeline=$('timeline');
@@ -297,24 +273,22 @@ function updateJump() {
   $('jump').hidden=!display.unseen;
   $('jump').textContent=language==='en' ? number(display.unseen)+' new steps ↑' : '有 '+number(display.unseen)+' 个新步骤 ↑';
 }
-function stop() {clearInterval(display.timer);display.timer=null;}
 function sessions() {
   const container=$('sessions');
   const sourceFilter=$('provider').value;
   const query=$('project').value.trim().toLowerCase();
-  const all=local ? localSessions : sources;
-  const drawKey=JSON.stringify([language,local,localKey,display.active,sourceFilter,query,all]);
+  const drawKey=JSON.stringify([language,sessionsLoaded,localKey,sourceFilter,query,localSessions]);
   if(drawKey===sessionDrawKey)return;
   sessionDrawKey=drawKey;
   container.replaceChildren();
   const groups=new Map();
-  all.forEach((source,i)=>{
+  localSessions.forEach(source=>{
     const project=source.project || t('无项目');
     if((sourceFilter && sourceFilter!==source.provider) ||
       ![project,sessionTitle(source)].some(value=>value.toLowerCase().includes(query)))return;
     const key=source.project_key??source.project;
     if(!groups.has(key))groups.set(key,{project,order:source.project_order,entries:[]});
-    groups.get(key).entries.push([source,i]);
+    groups.get(key).entries.push(source);
   });
   const ordered=[...groups].sort(([,a],[,b])=>(a.order??Infinity)-(b.order??Infinity));
   for(const [key,{project,entries}] of ordered){
@@ -325,19 +299,20 @@ function sessions() {
     const name=node('strong',project);name.title=project;
     heading.append(name,node('small',number(entries.length)));
     group.append(heading);
-    for(const [source,i] of entries){
+    for(const source of entries){
       const button=node('button',undefined,'session');
-      const current=local ? source.key===localKey : i===display.active;
+      const current=source.key===localKey;
       button.setAttribute('aria-pressed',String(current));
       const title=node('strong',sessionTitle(source));title.title=title.textContent;
-      const time=local && source.modified ? readableTime(new Date(source.modified*1000),true) : source.time;
+      const time=source.modified ? readableTime(new Date(source.modified*1000),true) : null;
       button.append(title,node('span',[source.provider,source.archived?t('归档'):null,time].filter(Boolean).join(' · '),'source'));
-      button.onclick=()=>{if(local){void selectLocal(source.key);return;}stop();Object.assign(display,{active:i,selected:4,file:null,failed:false,unseen:0});render();latestPosition();};
+      button.onclick=()=>void selectLocal(source.key);
       group.append(button);
     }
     container.append(group);
   }
-  if(!container.children.length)container.append(node('p',t('未找到匹配的会话'),'empty'));
+  if(!container.children.length)container.append(node('p',t(!sessionsLoaded?'正在查找本机会话…':
+    localSessions.length?'未找到匹配的会话':'没有找到本机会话。可在「目录设置」添加日志目录。'),'empty'));
 }
 
 function showStep(id) {
@@ -449,7 +424,7 @@ function renderFilters(steps){
   }
 }
 function childSession(step){
-  if(!local || !step?.child)return null;
+  if(!step?.child)return null;
   const provider=localSessions.find(parent=>parent.key===localKey)?.provider;
   return localSessions.find(session=>{
     const file=session.key.split('/').at(-1);
@@ -459,7 +434,7 @@ function childSession(step){
   });
 }
 function renderChildSession(pane,step){
-  if(!local || (!step.child && !['spawn_agent','Agent','Task'].includes(step.tool)))return;
+  if(!step.child && !['spawn_agent','Agent','Task'].includes(step.tool))return;
   const group=node('details',undefined,'section');
   const content=node('div',undefined,'child-records');
   group.append(node('summary',t('展开子会话')+(step.agentPath?' · '+step.agentPath:'')));
@@ -568,7 +543,7 @@ function details(steps) {
   if(step.patch)pane.append(section(t('补丁'),step.patch,true));
   if(step.content)pane.append(section(step.kind==='消息'?t('消息'):t('读取结果'),step.content,true));
   renderChildSession(pane,step);
-  if(local && !importedChat()){
+  if(localKey && !importedChat()){
     const feedback=node('button',t('记录反馈'));
     feedback.onclick=()=>document.dispatchEvent(new CustomEvent('insight-feedback',{detail:{
       source:localKey,turn:step.turnId??'',offset:step.sourceOffset??null
@@ -584,22 +559,18 @@ function visibleSteps(steps){
   }).filter(step=>(!display.failed || ['失败','已中止'].includes(step.state)) && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
 }
 function render() {
-  const source=local ? localSessions.find(session=>session.key===localKey) : sources[display.active];
-  const steps=rows(), done=!local && counts[display.active]===logs[display.active].length;
+  const source=localSessions.find(session=>session.key===localKey);
+  const steps=rows();
   $('title').textContent=source?(sessionTitle(source)):t('本机会话');
-  $('meta').textContent=source ? source.provider+' / '+(source.project||t('无项目'))+' · '+(language==='en' ? number(steps.length)+' records' : number(steps.length)+' 条记录')+(local?'':' · '+t(done?'演示结束':display.timer?'正在播放':'可继续演示')) : t('从左侧选择一个会话');
-  if(local && localModel) $('meta').textContent+=' · '+localModel;
+  $('meta').textContent=source ? source.provider+' / '+(source.project||t('无项目'))+' · '+(language==='en' ? number(steps.length)+' records' : number(steps.length)+' 条记录') : t('从左侧选择一个会话');
+  if(localModel) $('meta').textContent+=' · '+localModel;
   if(importedChat()) $('meta').textContent+=' · '+t('导入的聊天记录');
-  else if(local && localKey) $('meta').textContent+=' · '+(lastUpdate?t('最近更新')+' '+lastUpdate.toLocaleTimeString(language==='en'?'en':'zh-CN'):t('暂无新记录'));
-  $('folders').hidden=!local;
-  $('import-chatgpt').hidden=!local;
-  $('import-status').hidden=!local || !$('import-status').textContent;
+  else if(localKey) $('meta').textContent+=' · '+(lastUpdate?t('最近更新')+' '+lastUpdate.toLocaleTimeString(language==='en'?'en':'zh-CN'):t('暂无新记录'));
+  $('import-status').hidden=!$('import-status').textContent;
   $('failed').hidden=Boolean(importedChat());
   $('diagnostics').hidden=Boolean(importedChat());
-  $('diagnostics').disabled=!steps.length;
-  for(const id of ['play','next','reset'])$(id).hidden=local;
-  $('play').textContent=t(display.timer?'暂停播放':'播放后续日志');
-  $('play').disabled=done;$('next').disabled=done;
+  $('diagnostics').disabled=$('file-activity').disabled=!steps.length;
+  $('file-activity').hidden=Boolean(importedChat());
   $('failed').setAttribute('aria-pressed',String(display.failed));
   $('file').hidden=!display.file;$('file').textContent=(display.file?.path??'')+' ×';
   sessions();
@@ -613,7 +584,7 @@ function render() {
     if(!rounds.has(round))rounds.set(round,[]);
     rounds.get(round).push(step);
   }
-  const drawKey=JSON.stringify([language,localKey,display.active,display.selected,visible]);
+  const drawKey=JSON.stringify([language,localKey,display.selected,visible]);
   if(container.dataset.drawKey!==drawKey){
     container.dataset.drawKey=drawKey;
     container.replaceChildren();
@@ -623,7 +594,7 @@ function render() {
     for(const [round, entries] of groups){
       const group=node('details',undefined,'round');
       group.dataset.round=round;
-      group.open=openRounds.get(round)??(!local || round===latest || entries.some(step=>step.id===display.selected));
+      group.open=openRounds.get(round)??(round===latest || entries.some(step=>step.id===display.selected));
       const summary=node('summary');
       const first=steps.find(step=>String(step.round??1)===round && step.role==='user');
       const label=node('strong',t('任务轮次')+' '+round+(first?' · '+first.title:''));
@@ -651,12 +622,12 @@ function render() {
     if(!visible.length)container.append(node('p',t('没有符合筛选条件的步骤'),'empty'));
   }
   const selected=steps.find(step=>step.id===display.selected);
-  const key=JSON.stringify([language,localKey,display.active,selected,childSession(selected)?.key]);
+  const key=JSON.stringify([language,localKey,selected,childSession(selected)?.key]);
   if(detailKey!==key){detailKey=key;details(steps);}
   const usage=$('usage');
-  usage.hidden=!local || !localKey || Boolean(importedChat());
+  usage.hidden=!localKey || Boolean(importedChat());
   usage.replaceChildren(node('h2',t('Token 用量')));
-  if(local && localKey){
+  if(localKey){
     const values=localUsage?.values??{};
     const names={input_tokens:'输入',output_tokens:'输出',total_tokens:'总计',cached_input_tokens:'缓存输入',
       cache_write_input_tokens:'缓存写入',reasoning_output_tokens:'推理输出',cache_read_input_tokens:'缓存读取',
@@ -671,21 +642,7 @@ function render() {
   }
   updateJump();
 }
-function advance(){
-  const index=display.active, record=logs[index][counts[index]];
-  if(!record)return;
-  const follow=atTop();
-  const anchor=follow?null:timelineAnchor();
-  const before=visibleSteps(rows()).length;
-  counts[index]++;
-  if(!follow)display.unseen+=Math.max(0,visibleSteps(rows()).length-before);
-  if(counts[index]===logs[index].length)stop();
-  render();if(follow)latestPosition();else restoreAnchor(anchor);
-}
 $('project').oninput=sessions;$('provider').onchange=sessions;
-$('next').onclick=advance;
-$('play').onclick=()=>{if(display.timer)stop();else display.timer=setInterval(advance,1100);render();};
-$('reset').onclick=()=>{stop();counts[display.active]=initialCount;Object.assign(display,{selected:4,file:null,failed:false,unseen:0});render();latestPosition();};
 $('failed').onclick=()=>{display.failed=!display.failed;display.file=null;render();};
 $('file').onclick=()=>{display.file=null;render();};
 $('jump').onclick=latestPosition;
@@ -699,31 +656,14 @@ async function selectLocal(key) {
   render();
   try {
     const session=await invoke('read_session',{key});
-    if(!local || selection!==generation)return;
+    if(selection!==generation)return;
     localSteps=session.steps;eventCount=session.eventCount;localUsage=session.usage;localModel=session.model;
     render();
     latestPosition();
   } catch(error) {
-    if(local && selection===generation)$('meta').textContent=String(error);
+    if(selection===generation)$('meta').textContent=String(error);
   } finally { if(selection===generation)loading=false; }
 }
-$('mode').onclick=async()=>{
-  stop();
-  local=!local;
-  selection++;loading=false;eventCount=null;lastUpdate=null;listTick=0;
-  localKey=null;
-  localSteps=[];localUsage=null;localModel=null;
-  Object.assign(display,{selected:local?null:4,file:null,failed:false,category:"activity",unseen:0});
-  $('mode').textContent=t(local?'切换演示':'浏览本机会话');
-  $('mode-label').textContent=t(local?'本机会话':'演示模式 · 模拟日志');
-  $('project').value='';
-  $('provider').value='';
-  render();
-  if(local)try {
-    localSessions=await invoke('local_sessions');
-    if(local)render();
-  } catch(error) { if(local)$('meta').textContent=String(error); }
-};
 $('folder-toggle').onclick=()=>{
   const panel=$('folder-options');
   panel.hidden=!panel.hidden;
@@ -742,7 +682,7 @@ async function addFolder(provider) {
     }
     localSessions=await invoke('local_sessions');
     status.textContent=t('已添加日志目录')+' · '+provider;
-    if(local)render();
+    render();
   } catch(error) {
     status.textContent=t('无法添加日志目录')+' · '+String(error);
   } finally {
@@ -769,35 +709,33 @@ $('import-chatgpt').onclick=async()=>{
     if(count==null)return;
     importCount=count;
     localSessions=await invoke('local_sessions');
-    if(local){
-      $('provider').value='ChatGPT';
-      $('project').value='';
-      showImportCount();
-      if(!importedChat()){
-        const first=localSessions.find(s=>s.provider==='ChatGPT');
-        if(first)await selectLocal(first.key);
-        else render();
-      }
-      else await selectLocal(localKey);
+    $('provider').value='ChatGPT';
+    $('project').value='';
+    showImportCount();
+    if(!importedChat()){
+      const first=localSessions.find(s=>s.provider==='ChatGPT');
+      if(first)await selectLocal(first.key);
+      else render();
     }
+    else await selectLocal(localKey);
   }catch(error){
     status.textContent=String(error);
   }finally{
-    status.hidden=!local || !status.textContent;
+    status.hidden= !status.textContent;
     button.disabled=false;
   }
 };
 $('codex-folder').onclick=()=>void addFolder('Codex');
 $('claude-folder').onclick=()=>void addFolder('Claude Code');
-setInterval(async()=>{
-  if(!local || refreshing || loading)return;
+async function refreshLocal(){
+  if(refreshing || loading)return;
   refreshing=true;
   const generation=selection;
   const key=localKey;
   try {
     if(key && !importedChat()) {
       const session=await invoke('read_session',{key});
-      if(!local || selection!==generation)return;
+      if(selection!==generation)return;
       if(session.eventCount!==eventCount || JSON.stringify(session.steps)!==JSON.stringify(localSteps)){
         const follow=atTop();
         const anchor=follow?null:timelineAnchor();
@@ -810,23 +748,22 @@ setInterval(async()=>{
     }
     if(listTick++%4===0){
       localSessions=await invoke('local_sessions');
-      if(local)render();
+      sessionsLoaded=true;
+      render();
     }
   } catch(error) {
-    if(local && selection===generation)$('meta').textContent=String(error);
+    if(selection===generation)$('meta').textContent=String(error);
+    if(!sessionsLoaded){sessionsLoaded=true;sessions();}
   } finally { refreshing=false; }
-},700);
+}
+setInterval(refreshLocal,700);
 $('language').onclick=()=>{
   language=language==='en'?'zh':'en';
   localStorage.setItem('agentlens.language',language);
   applyLanguage();
   showImportCount();
-  if(logs.length)render();
+  render();
 };
 applyLanguage();
-$('mode').disabled=true;
-invoke('demo_records').then(records=>{
-  logs=records;
-  $('mode').disabled=false;
-  render();
-}).catch(error=>{$('meta').textContent=String(error);});
+render();
+void refreshLocal();

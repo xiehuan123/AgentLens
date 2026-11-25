@@ -1,5 +1,7 @@
 # AgentLens 使用指南
 
+
+[下载 macOS 与 Windows 安装包](https://github.com/xiehuan123/AgentLens/releases/latest)
 ## 启动与打包
 
 在 macOS 安装 Rust、Cargo 和 Xcode 命令行工具后，在项目根目录运行：
@@ -12,7 +14,7 @@ cargo run --locked
 
 ## 从失败定位相关修改
 
-1. 应用默认打开演示模式。点击「浏览本机会话」，从左栏按来源或项目查找会话。自定义位置可通过对应的「添加日志目录」按钮指定。
+1. 应用启动后自动查找本机会话。从左栏按来源或项目查找会话。自定义位置可通过对应的「添加日志目录」按钮指定。
 2. 在时间线点开失败卡片，查看命令、错误输出及日志记录的退出码。点「查看前一次修改」可跳转到相关补丁。
 3. 有明确文件路径时，可以筛出本轮的同文件步骤。在派发步骤的详情里点「展开子会话」，可查看子智能体消息、工具和结果，也可刷新或打开完整子会话。日志缺少关联 ID 或子会话文件时，界面会分别标明。
 4. 执行时间线最新记录在顶部。往下翻查旧记录时，视图保持当前位置。点击新增步骤提示可回到顶部。
@@ -20,7 +22,7 @@ cargo run --locked
 
 ## 数据位置
 
-AgentLens 只读 Codex 与 Claude Code 源日志。已解析的日志及读取进度保存在 `~/Library/Application Support/dev.agentlens.desktop/sessions.sqlite3`，演示数据使用独立的 `demo.sqlite3`。步骤详情按原始内容存入该数据库，可能包含凭证、源码和个人信息。应用不会上传日志。Token 用量以日志实际字段为准，缺失值标为未知。
+AgentLens 只读 Codex 与 Claude Code 源日志。已解析的日志及读取进度保存在 `~/Library/Application Support/dev.agentlens.desktop/sessions.sqlite3`。步骤详情按原始内容存入该数据库，可能包含凭证、源码和个人信息。应用不会上传日志。Token 用量以日志实际字段为准，缺失值标为未知。
 
 ## 导入 ChatGPT 桌面聊天
 
@@ -49,7 +51,7 @@ Codex 本地日志保存的响应 ID 可用于定位已有响应记录。原始�
 在当前版本与标签一致、已提交的 `main` 分支上运行：
 
 ```sh
-./scripts/release.sh v0.2.2
+./scripts/release.sh v0.3.0
 ```
 
 命令会推送主分支和版本标签，GitHub Actions 自动构建 Apple 芯片和 Intel Mac 的应用 ZIP、Windows x64 的 NSIS 安装程序，并把三个包和 SHA-256 校验文件上传到同一个 GitHub Release。私有仓库的下载权限由 GitHub 仓库权限控制。首次发布需要对仓库和 GitHub Actions 工作流有写权限。macOS 包使用临时签名，Windows 安装程序未签名。

@@ -12,3 +12,9 @@
 .env
 .env.*
 !.env.example
+
+# Common outputs from local session sharing
+rollout-*.jsonl
+agentlens-full-sessions*.json
+agentlens-eval-cases*.json
+agentlens-eval-dataset*.json

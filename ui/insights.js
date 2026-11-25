@@ -132,7 +132,6 @@
   }
   function openSession(entry){
     void page('sessions').then(async()=>{
-      if(!local)await $('mode').onclick();
       await selectLocal(entry.source);
       const step=localSteps.find(row=>row.sourceOffset===entry.offset && entry.offset!=null) ??
         localSteps.find(row=>row.call===entry.callId && entry.callId) ??
