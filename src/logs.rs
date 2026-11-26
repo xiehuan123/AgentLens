@@ -1,7 +1,7 @@
 pub mod chatgpt;
 pub mod insights;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
@@ -765,7 +765,15 @@ fn claude(record: &Value) -> Vec<Value> {
                         )),
                         Some("tool_result") => events.push(json!({
                             "event":"result","call":block["tool_use_id"],
-                            "output":string(&block["content"]),"failed":block["is_error"].as_bool(),
+                            "output":string(&block["content"]),"failed":block["is_error"].as_bool().or_else(|| {
+                                let result = &record["toolUseResult"];
+                                result["commandName"].as_str()?;
+                                Some(!result["success"].as_bool()?)
+                            }),
+                            "readPath":record["toolUseResult"]["file"]["filePath"].as_str().filter(|_| {
+                                record["toolUseResult"]["type"] == "text"
+                                    && record["toolUseResult"]["file"]["content"].is_string()
+                            }),
                             "child":child_id(&record["toolUseResult"])
                         })),
                         _ => (),
@@ -775,6 +783,21 @@ fn claude(record: &Value) -> Vec<Value> {
         }
         "system" if record["subtype"] == "turn_duration" => events.push(json!({"event":"end"})),
         _ => events.push(json!({"event":"unknown","type":kind})),
+    }
+    if let Some(uuid) = record["uuid"].as_str() {
+        let human_prompt = kind == "user"
+            && record["isMeta"] != true
+            && !payload["content"]
+                .as_array()
+                .is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "tool_result"))
+            && events.iter().any(|event| event["event"] == "message");
+        for event in &mut events {
+            event["claudeUuid"] = json!(uuid);
+            event["claudeParent"] = record["parentUuid"].clone();
+            if human_prompt {
+                event["claudePrompt"] = json!(true);
+            }
+        }
     }
     events
 }
@@ -806,6 +829,9 @@ fn parse(provider: Provider, record: &Value) -> Vec<Value> {
 }
 
 fn migrate(db: &Connection) -> Result<(), String> {
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|e| e.to_string())?;
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS sources (
       path TEXT PRIMARY KEY, cwd TEXT NOT NULL DEFAULT '', cursor INTEGER NOT NULL DEFAULT 0,
@@ -818,12 +844,35 @@ fn migrate(db: &Connection) -> Result<(), String> {
     CREATE TABLE IF NOT EXISTS catalog (
       path TEXT PRIMARY KEY, cwd TEXT NOT NULL, modified INTEGER NOT NULL,
       provider TEXT NOT NULL, archived INTEGER NOT NULL
-    );
-    PRAGMA user_version = 5;",
+    );",
     )
     .map_err(|e| e.to_string())?;
     chatgpt::migrate(db).map_err(|e| e.to_string())?;
-    insights::migrate(db).map_err(|e| e.to_string())
+    insights::migrate(db).map_err(|e| e.to_string())?;
+    if version < 6 {
+        let tx = Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let current: i64 = tx
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        if current >= 6 {
+            return Ok(());
+        }
+        // Claude's structured Skill outcome was omitted from the old cached events.
+        tx.execute_batch(
+            "UPDATE sources SET cursor=-1 WHERE path IN (
+                SELECT path FROM catalog WHERE provider='Claude Code'
+                UNION SELECT source FROM insight_calls WHERE category='skill' AND provider='Claude Code'
+            );
+            DELETE FROM insight_calls WHERE category='skill';
+            DROP VIEW IF EXISTS insight_unique;
+            PRAGMA user_version=6;",
+        )
+        .map_err(|e| e.to_string())?;
+        insights::create_unique_view(&tx).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 pub fn open(db_path: &Path) -> Result<Connection, String> {
@@ -915,8 +964,10 @@ pub fn session(
             .then(|| e["model"].as_str())
             .flatten()
     });
+    let mut steps = timeline(&events);
+    let skills = insights::annotate_session_skills(db, key, &mut steps)?;
     Ok(
-        json!({"steps":timeline(&events),"eventCount":events.len(),"usage":usage_summary(&events),"model":model}),
+        json!({"steps":steps,"eventCount":events.len(),"usage":usage_summary(&events),"model":model,"skills":skills}),
     )
 }
 
@@ -1194,7 +1245,7 @@ fn timeline(events: &[Value]) -> Vec<Value> {
                     }
                     if !event["output"].is_null() { step["output"] = event["output"].clone(); }
                     step["resultOffset"] = event["sourceOffset"].clone();
-                    for field in ["exit", "reason", "errorCode", "fileChanges"] {
+                    for field in ["exit", "reason", "errorCode", "fileChanges", "readPath"] {
                         if !event[field].is_null() { step[field] = event[field].clone(); }
                     }
                 } else {

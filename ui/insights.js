@@ -4,10 +4,15 @@
   const layout=root.parentElement;
   const l=(cn,en)=>language==='en'?en:cn;
   const call=(action,input={})=>invoke('agent_insights',{action,input});
-  const triggerLabel=key=>({explicit:l('主动','Explicit'),implicit:l('被动','Implicit'),unknown:l('未知','Unknown'),candidate:l('候选证据','Candidate')})[key]??key;
+  const triggerLabel=key=>({explicit:l('主动调用','User-requested'),implicit:l('被动调用','Agent-triggered'),unknown:l('来源未知','Trigger unknown'),candidate:l('候选证据','Candidate')})[key]??key;
   const proofLabel=key=>({user_request:l('用户明确指定','User requested this skill'),assistant_selection:l('AI 声明使用','Agent declared use'),
-    skill_file_read:l('已读取技能内容','Skill content was read'),skill_file_reference:l('引用技能文件','Skill file referenced'),
-    user_selection:l('用户从选择器指定','User selected this skill'),selected_instructions:l('运行器注入技能内容','Skill content was injected')})[key]??key;
+    skill_file_read:l('已读取技能文件','Skill file read'),skill_file_reference:l('引用技能文件','Skill file referenced'),
+    skill_script_reference:l('引用技能脚本','Skill script referenced'),user_selection:l('用户消息包含技能链接','User message contains skill link'),
+    codex_initial_request:l('Codex 首条请求明确指定','Skill requested in first Codex message'),
+    selected_instructions:l('运行器注入选定技能','Runtime injected selected skill'),native_skill_success:l('原生 Skill 工具成功','Native Skill tool succeeded'),
+    native_skill_failed:l('原生 Skill 工具失败或被拒绝','Native Skill tool failed or was declined'),
+    native_skill_attempt:l('已请求原生 Skill 工具','Native Skill tool requested'),
+    codex_native_skill:l('Codex 专用 Skill 工具成功','Codex native Skill tool succeeded')})[key]??key;
   const outcomeLabel=key=>({success:l('成功','Succeeded'),failure:l('失败','Failed'),declined:l('拒绝','Declined'),unknown:l('未知','Unknown')})[key]??key;
   const day=86400;
   const date=value=>value==null?'—':readableTime(value*1000);
@@ -35,12 +40,13 @@
     if(state.page==='skills')return {category:'skill',...(item.path?{server:item.path}:{name:item.name})};
     return {category:'mcp',server:item.name,...(item.tool?{name:item.tool}:{})};
   }
-  function query(){
+  function query(includeActivity=false){
     const bounds=state.range==='all'?{}:state.range==='custom'?{
       from:dateBound(state.dateFrom),until:dateBound(state.dateUntil,true)
     }:{from:pastDays(Number(state.range)),until:pastDays(0)};
     return {...bounds,project:state.project,provider:state.provider,confidence:state.confidence,
-      ...state.drill,...studioScope(),...(state.tab==='errors'?{outcome:'failed'}:{}),offset:state.activityOffset};
+      ...studioScope(),...(state.tab==='errors'?{outcome:'failed'}:{}),
+      ...(includeActivity?{...state.drill,offset:state.activityOffset}:{})};
   }
 
   function button(label, action, pressed) {
@@ -71,10 +77,12 @@
     if(['sessions','feedback','evaluations'].includes(state.page))return;
     const request=++token,filter=query();
     try{
-      const result=await call('query',filter);
+      const hasActivityFilter=state.activityOffset||Object.keys(state.drill).length;
+      const [result,activity]=await Promise.all([call('query',filter),
+        hasActivityFilter?call('query',{...query(true),activity_only:true}):null]);
       if(request!==token)return;
-      state.data=result;
-      state.previous=null;
+      state.data=activity?{...result,activity:activity.activity}:result;
+      if(compare)state.previous=null;
       render();
       if(compare&&filter.from!=null&&filter.until!=null&&filter.until>filter.from&&state.page==='overview'&&!Object.keys(state.drill).length){
         const result=await call('query',{...filter,from:filter.from-(filter.until-filter.from),until:filter.from,offset:0});
@@ -139,15 +147,33 @@
       if(step)showStep(step.id);
     });
   }
-  function evidenceLink(row){
-    const preferred=row.evidence?.find(item=>item.kind!=='selected_instructions')??row.evidence?.[0];
+  function evidenceLink(row,proof){
+    const matching=state.drill.evidence_kind?[state.drill.evidence_kind]:
+      row.trigger==='explicit'?['user_selection','user_request','codex_initial_request']:confirmed(row)?['selected_instructions','native_skill_success','codex_native_skill','skill_file_read']:['skill_file_read'];
+    const preferred=proof??row.evidence?.find(item=>matching.includes(item.kind))??row.evidence?.[0];
     return {subject:row.category==='skill'?(row.server||row.name):'',source:row.source,turn:row.turn,
       offset:preferred?.byteOffset??null,callId:preferred?.callId??null};
   }
 
-  function activities(title, rows, paging){
+  function activities(title, rows, paging, skillFilters=false){
     const box=sectionBox(title);box.id='insight-activity';
-    if(Object.keys(state.drill).length)box.append(button(l('清除下钻','Clear drilldown'),()=>setDrill({})));
+    const drillKeys=Object.keys(state.drill).length;
+    if(skillFilters){
+      const filters=node('div',undefined,'insight-evidence-filters');
+      filters.setAttribute('role','group');
+      filters.setAttribute('aria-label',l('筛选活动证据','Filter evidence'));
+      const selected=state.drill.evidence_kind?'reads':state.drill.trigger==='candidate'?'candidates':
+        state.drill.confirmed_only&&state.drill.category==='skill'&&!state.drill.from&&!state.drill.trigger&&!state.drill.turn_required?'confirmed':
+        drillKeys?'':'all';
+      for(const [key,label,pick] of [
+        ['all',l('全部活动','All activity'),{}],
+        ['confirmed',l('调用记录','Invocations'),{category:'skill',confirmed_only:true}],
+        ['reads',l('文件读取','File reads'),{category:'skill',evidence_kind:'skill_file_read'}],
+        ['candidates',l('候选线索','Candidates'),{category:'skill',trigger:'candidate'}]
+      ])filters.append(button(label,()=>setDrill(pick),selected===key));
+      if(drillKeys&&!selected)filters.append(button(l('清除筛选','Clear filter'),()=>setDrill({})));
+      box.append(filters);
+    }else if(drillKeys)box.append(button(l('清除筛选','Clear filter'),()=>setDrill({})));
     if(!rows.length){box.append(empty());return box;}
     const table=node('table',undefined,'insight-table');
     const header=node('tr');
@@ -157,10 +183,34 @@
     for(const row of rows){
       const tr=node('tr');
       const caption=row.category==='mcp'?row.server+' / '+row.name:row.name;
-      const details=node('details');details.append(node('summary',(row.category==='mcp'?outcomeLabel(row.outcome):triggerLabel(row.trigger))+' · '+row.confidence));
-      const proof=(row.evidence??[]).map(item=>[proofLabel(item.kind),item.byteOffset!=null?'@'+item.byteOffset:null,
-        item.resultOffset!=null?'→ @'+item.resultOffset:null,item.callId].filter(Boolean).join(' ')).join('\n');
-      details.append(node('pre',proof));
+      const details=node('details',undefined,'insight-evidence');
+      const proofs=row.evidence??[];
+      const reads=proofs.filter(item=>item.kind==='skill_file_read').length;
+      const category=row.category==='mcp'?outcomeLabel(row.outcome):confirmed(row)?triggerLabel(row.trigger):
+        reads?l('文件读取','File read'):l('候选线索','Candidate evidence');
+      const pill=node('span',category,'insight-evidence-tag');
+      pill.dataset.kind=row.category==='mcp'?row.outcome:confirmed(row)?'activation':reads?'read':'candidate';
+      const summary=node('summary');
+      summary.append(pill);
+      if(row.category==='skill'&&reads&&(confirmed(row)||reads>1))summary.append(node('small',number(reads)+' '+l('条读取','reads')));
+      details.append(summary);
+      if(row.category==='skill'){
+        if(confirmed(row)&&!row.turn)details.append(node('small',l('缺少轮次 ID','Turn ID unavailable')));
+        const list=node('ul',undefined,'insight-proof-list');
+        for(const item of proofs){
+          const line=node('li');
+          const offset=[item.byteOffset,item.resultOffset].filter(value=>value!=null).map(value=>'@'+value).join(' → ');
+          line.append(node('span',proofLabel(item.kind)));
+          if(offset)line.append(node('small',offset));
+          if(item.kind==='skill_file_read')line.append(button(l('定位读取','Open read step'),()=>openSession(evidenceLink(row,item))));
+          list.append(line);
+        }
+        details.append(list);
+      }else{
+        const proof=proofs.map(item=>[proofLabel(item.kind),item.byteOffset!=null?'@'+item.byteOffset:null,
+          item.resultOffset!=null?'→ @'+item.resultOffset:null,item.callId].filter(Boolean).join(' ')).join('\n');
+        details.append(node('pre',proof));
+      }
       if(row.category==='mcp'){
         const summary=row.evidence?.[0];
         const metadata=[['arguments',l('参数结构','Argument shape')],['result',l('结果结构','Result shape')]];
@@ -173,8 +223,11 @@
       if(row.category==='skill')details.append(node('small',l('历史版本未知','Unknown version')));
       const actions=node('div',undefined,'insight-actions');
       actions.append(button(l('打开会话','Open session'),()=>openSession(evidenceLink(row))),button(l('反馈','Feedback'),()=>openFeedback(evidenceLink(row))));
-      const cells=[node('td',caption),node('td'),node('td',(row.project||'—')+' · '+date(row.time)),node('td')];
-      cells[1].append(details);cells[3].append(actions);tr.append(...cells);body.append(tr);
+      const cells=[node('td'),node('td'),node('td'),node('td')];
+      cells[0].append(node('strong',caption),node('small',row.provider));
+      if(row.category==='skill'&&row.server){const path=node('small',row.server,'insight-evidence-path');path.title=row.server;cells[0].append(path);}
+      cells[1].append(details);cells[2].append(node('span',date(row.time)),node('small',row.project||'—'));
+      cells[3].append(actions);tr.append(...cells);body.append(tr);
     }
     table.append(body);const wrap=node('div',undefined,'insight-table-wrap');wrap.append(table);box.append(wrap);
     if(paging){
@@ -258,42 +311,59 @@
     const max=[...buckets.values()].reduce((current,row)=>Math.max(current,Object.values(row).reduce((a,b)=>a+b,0)),1);
     const plot=node('div',undefined,'insight-trend');
     const keys=category==='skill'?['explicit','implicit','unknown']:['success','failure','unknown'];
-    const legend=node('div',undefined,'insight-actions');
+    const legend=node('div',undefined,'insight-chart-legend');
     const hidden=new Set();
+    const labelFor=key=>category==='skill'?triggerLabel(key):outcomeLabel(key);
     function draw(){
       plot.replaceChildren();
       for(const [bucket,values] of [...buckets].sort((a,b)=>a[0]-b[0])){
         const counts=keys.filter(k=>!hidden.has(k)).map(k=>[k,values[k]??0]);
+        const total=counts.reduce((n,[,count])=>n+count,0);
         const dayDate=new Date(bucket*day*1000);
         const label=dayDate.toISOString().slice(0,10);
+        const dateLabel=new Intl.DateTimeFormat(locale(),{timeZone:'UTC',month:'numeric',...(state.bucket==='month'?{year:'2-digit'}:{day:'numeric'})}).format(dayDate);
         const from=bucket*day;
         const until=state.bucket==='month'?Date.UTC(dayDate.getUTCFullYear(),dayDate.getUTCMonth()+1,1)/1000:from+day*(state.bucket==='week'?7:1);
         const narrowed=query();
-        const entry=button(label,()=>setDrill({...drillPick,category,confirmed_only:true,from:Math.max(from,narrowed.from??from),until:Math.min(until,narrowed.until??until)}));
-        entry.title=counts.map(([key,value])=>(category==='skill'?triggerLabel(key):outcomeLabel(key))+' '+value).join(' · ');
-        entry.append(stack(counts,max));plot.append(entry);
+        const entry=button('',()=>setDrill({...drillPick,category,confirmed_only:true,from:Math.max(from,narrowed.from??from),until:Math.min(until,narrowed.until??until)}));
+        entry.title=label+' · '+counts.map(([key,count])=>labelFor(key)+' '+number(count)).join(' · ');
+        entry.setAttribute('aria-label',entry.title);
+        const column=node('span',undefined,'insight-chart-column');
+        const bars=node('span',undefined,'insight-chart-bars');
+        bars.style.height=(total/max*100)+'%';
+        bars.style.minHeight=total?'3px':'0';
+        for(const [kind,count] of counts){
+          if(!count)continue;
+          const segment=node('span',undefined,'insight-chart-segment '+kind);
+          segment.style.flexGrow=String(count);bars.append(segment);
+        }
+        column.append(bars);
+        entry.append(column,node('small',dateLabel));plot.append(entry);
       }
     }
     for(const key of keys){
-      const item=button(category==='skill'?triggerLabel(key):outcomeLabel(key),()=>{
+      const item=button(labelFor(key),()=>{
         if(hidden.has(key))hidden.delete(key);else hidden.add(key);
         item.setAttribute('aria-pressed',String(!hidden.has(key)));draw();
       },true);
-      legend.append(item);
+      item.prepend(node('span',undefined,'insight-series-dot '+key));legend.append(item);
     }
     draw();box.append(legend,plot,node('small',l('日期按 UTC 聚合','Buckets use UTC')));return box;
   }
   function distribution(rows){
     const keys=['explicit','implicit','unknown'];
-    const counts=keys.map(k=>sum(rows.filter(row=>row.trigger===k)));
+    const counts=keys.map(key=>sum(rows.filter(row=>row.trigger===key)));
     const total=counts.reduce((a,b)=>a+b,0);
-    const box=sectionBox(l('技能调用分布','Invocation distribution'));
-    if(!total){box.append(empty());return box;}
-    const donut=node('div',number(total),'insight-donut');
-    donut.style.background='conic-gradient(var(--explicit) 0 '+counts[0]/total*100+'%, var(--implicit) '+counts[0]/total*100+'% '+(counts[0]+counts[1])/total*100+'%, var(--unknown) 0)';
-    const legend=node('div',undefined,'insight-actions');
-    keys.forEach((key,i)=>legend.append(button(triggerLabel(key)+' '+percent(counts[i],total),()=>setDrill({category:'skill',trigger:key}))));
-    box.append(donut,legend);return box;
+    const box=sectionBox(l('调用来源','Invocation sources'));
+    box.append(stack(keys.map((key,i)=>[key,counts[i]]),total));
+    const legend=node('div',undefined,'insight-breakdown');
+    keys.forEach((key,i)=>{
+      const row=button('',()=>setDrill({category:'skill',trigger:key,confirmed_only:true}));
+      const label=node('span',triggerLabel(key));label.prepend(node('span',undefined,'insight-series-dot '+key));
+      row.append(label,node('strong',number(counts[i])),node('small',percent(counts[i],total)));
+      legend.append(row);
+    });
+    box.append(legend);return box;
   }
   function heatmap(){
     const box=sectionBox(l('每日活跃度','Activity heatmap'));
@@ -320,7 +390,7 @@
   }
 
   function dataToolbar(){
-    const bar=node('div',undefined,'insight-actions');
+    const bar=node('div',undefined,'insight-actions insight-data-toolbar');
     bar.append(select(l('时间范围','Date range'),[['1',l('今天','Today')],['7',l('近 7 天','Last 7 days')],['30',l('近 30 天','Last 30 days')],
       ['90',l('近 90 天','Last 90 days')],['all',l('全部时间','All time')],['custom',l('自定义','Custom')]],state.range,value=>setFilter('range',value)));
     if(state.range==='custom')for(const [key,label] of [['dateFrom',l('开始','From')],['dateUntil',l('结束','To')]]){
@@ -347,25 +417,28 @@
   }
   function metrics(){
     const skills=skillGroup(), mcp=state.data.groups.filter(row=>row.category==='mcp');
-    const categories=['explicit','implicit','unknown'];
-    const counts=categories.map(kind=>sum(skills.filter(row=>row.trigger===kind)));
-    const total=sum(skills),success=sum(mcp.filter(row=>row.outcome==='success')),failed=sum(mcp.filter(row=>['failure','declined'].includes(row.outcome)));
+    const success=sum(mcp.filter(row=>row.outcome==='success'));
+    const failed=sum(mcp.filter(row=>['failure','declined'].includes(row.outcome)));
     const prior=state.previous?.groups??[];
+    const reads=rows=>rows.reduce((count,row)=>count+(row.fileReads??0),0);
+    const turns=rows=>rows.reduce((count,row)=>count+(row.withTurn??0),0);
+    const turnCount=turns(skills),withoutTurn=sum(skills)-turnCount;
     const values=[
-      [l('已安装 Skills','Installed skills'),state.data.skills.filter(skill=>skill.present).length,undefined,()=>page('skills'),l('当前扫描快照','Current snapshot')],
-      [l('活跃 Skills','Active skills'),new Set(skills.map(bySkill)).size,undefined,()=>page('skills')],
-      [l('Skills 调用','Skill invocations'),total,sum(prior.filter(confirmed)),()=>setDrill({category:'skill',confirmed_only:true})],
-      ...categories.map((kind,i)=>[triggerLabel(kind),counts[i],sum(prior.filter(row=>confirmed(row)&&row.trigger===kind)),()=>setDrill({category:'skill',trigger:kind}),percent(counts[i],total)]),
-      [l('已配置 MCP','Configured MCP servers'),new Set(state.data.servers.map(server=>server.name)).size,undefined,()=>page('mcp'),l('当前配置快照','Current config snapshot')],
-      [l('活跃 MCP','Active MCP servers'),new Set(mcp.map(row=>row.server)).size,undefined,()=>page('mcp')],
-      [l('MCP 工具调用','MCP calls'),sum(mcp),sum(prior.filter(row=>row.category==='mcp')),()=>setDrill({category:'mcp'})],
-      [l('MCP 失败及拒绝','MCP failures & declines'),failed,sum(prior.filter(row=>row.category==='mcp'&&['failure','declined'].includes(row.outcome))),()=>setDrill({category:'mcp',outcome:'failed'})],
-      [l('MCP 成功率','MCP success rate'),percent(success,success+failed),undefined,null,l('仅统计已知结果','Known outcomes only')],
+      ['activation',l('Skill 调用轮次','Skill invocation turns'),turnCount,turns(prior.filter(confirmed)),
+        ()=>setDrill({category:'skill',confirmed_only:true,turn_required:true}),
+        withoutTurn?l('另有 ','Plus ')+number(withoutTurn)+l(' 条调用缺少轮次 ID',' invocations without a turn ID'):
+          turnCount?l('同轮同一 Skill 合并','Same skill merged within each turn'):l('当前范围内证据不足','Insufficient evidence in this range')],
+      ['read',l('Skill 文件读取','Skill file reads'),reads(state.data.groups),reads(prior),
+        ()=>setDrill({category:'skill',evidence_kind:'skill_file_read'}),l('可定位到原始读取步骤','Open the original read steps')],
+      ['skill',l('已调用 Skills','Skills invoked'),new Set(skills.map(bySkill)).size,0,
+        ()=>page('skills'),l('按技能身份去重','Distinct skill identities')],
+      ['mcp',l('MCP 工具调用','MCP tool calls'),sum(mcp),sum(prior.filter(row=>row.category==='mcp')),
+        ()=>setDrill({category:'mcp'}),success+failed?l('已知结果成功率','Known-outcome success rate')+' '+percent(success,success+failed):l('结果证据不足','Insufficient outcome evidence')],
     ];
     const cards=node('div',undefined,'insight-metrics');
-    for(const [label,count,before,action,context] of values){
+    for(const [kind,label,count,before,action,context] of values){
       const card=action?button('',action):node('div');
-      card.className='insight-metric';
+      card.className='insight-metric';card.dataset.kind=kind;
       card.append(node('span',label),node('strong',typeof count==='number'?number(count):count));
       if(context)card.append(node('small',context));
       if(state.previous&&before>0&&typeof count==='number'){
@@ -382,8 +455,8 @@
     const installed=data.skills.filter(skill=>skill.present), seen=new Set(skills.map(bySkill));
     const observed=installed.filter(skill=>seen.has(skill.path));
     const adoption=sectionBox(l('技能采用情况','Skill adoption'),
-      node('p',observed.length+' / '+installed.length+' '+l('项已安装技能在当前范围内有调用证据。','installed skills have invocation evidence in this range.')),
-      node('p',(installed.length-observed.length)+' '+l('项在当前索引范围内未观察到使用。','installed skills have no observed use in the indexed range.')),
+      node('p',observed.length+' / '+installed.length+' '+l('项已安装技能有调用记录。','installed skills have invocation records.')),
+      node('p',(installed.length-observed.length)+' '+l('项暂无调用证据。','installed skills lack invocation evidence in this range.')),
       button(l('打开 Skills Studio','Open Skills Studio'),()=>page('skills')));
     const observedChanges=installed.slice().sort((a,b)=>b.lastChanged-a.lastChanged).slice(0,5);
     if(observedChanges.length)adoption.append(node('h3',l('最近观察到版本','Latest observed versions')));
@@ -401,15 +474,16 @@
       activeMcp?{server:activeMcp}:{});
     if(mcpServers.length>1)series.insertBefore(select(l('MCP 服务','MCP server'),[['',l('全部服务','All servers')],
       ...mcpServers.map(name=>[name,name])],activeMcp,value=>{mcpSeries=value;render();}),series.children[1]??null);
-    const grid=node('div',undefined,'insight-grid');
-    grid.append(trend(l('技能调用趋势','Skill usage trend'),'skill'),distribution(skills),
-      rating(l('常用 Skills','Top skills'),sorted(groups(skills,bySkill)),'skill',item=>openStudio('skills',item)),
+    const primary=node('div',undefined,'insight-grid insight-overview-primary');
+    primary.append(trend(l('Skill 调用趋势','Skill invocation trend'),'skill'),distribution(skills));
+    const grid=node('div',undefined,'insight-grid insight-overview-secondary');
+    grid.append(rating(l('常用 Skills','Top skills'),sorted(groups(skills,bySkill)),'skill',item=>openStudio('skills',item)),
       rating(l('常用 MCP 服务','Top MCP servers'),sorted(groups(mcp,row=>row.server)),'server',item=>openStudio('mcp',item)),
       series,
       rating(l('常用 MCP 工具','Top MCP tools'),sorted(groups(activeMcp?mcp.filter(row=>row.server===activeMcp):mcp,
         row=>row.server+' / '+row.name)),'tool',item=>openStudio('mcp',item)),
       heatmap(),adoption,coverage);
-    const recent=activities(l('最近调用证据','Recent invocation evidence'),data.activity,true);
+    const recent=activities(l('活动明细','Activity evidence'),data.activity,true,true);
     if(data.lifecycle?.length){
       const changes=sectionBox(l('版本观察与反馈','Version observations & feedback'));
       for(const entry of data.lifecycle){
@@ -420,7 +494,7 @@
       }
       grid.append(changes);
     }
-    root.append(metrics(),grid,recent);
+    root.append(metrics(),primary,recent,grid);
   }
 
   async function openStudio(pageName,item){
@@ -442,12 +516,13 @@
   function studioItems(skill){
     const data=state.data;
     if(skill){
-      const items=new Map(data.skills.map(entry=>[entry.path,{...entry,key:entry.path,server:entry.path,count:0,candidates:0,last:0,rows:[]}]));
+      const items=new Map(data.skills.map(entry=>[entry.path,{...entry,key:entry.path,server:entry.path,count:0,candidates:0,reads:0,last:0,rows:[]}]));
       for(const record of groups(data.groups.filter(row=>row.category==='skill'),bySkill)){
         const entry=items.get(record.key)??{path:record.key,present:false,scope:'historical'};
         const candidates=sum(record.rows.filter(row=>row.trigger==='candidate'));
         const calls=record.rows.filter(confirmed);
-        items.set(record.key,{...entry,...record,count:sum(calls),candidates,
+        const reads=record.rows.reduce((total,row)=>total+(row.fileReads??0),0);
+        items.set(record.key,{...entry,...record,count:sum(calls),candidates,reads,
           last:calls.reduce((latest,row)=>Math.max(latest,row.latest??0),0)});
       }
       return [...items.values()];
@@ -470,10 +545,10 @@
     if(skill) box.classList.add('studio-skill-summary');
     const values=[
       [skill?l('已发现技能','Discovered skills'):l('已配置服务','Configured servers'),initial.length,'configured'],
-      [l('当前范围内有调用','Used in this range'),active.length,'used'],
+      [skill?l('有调用记录','With invocations'):l('当前范围内有调用','Used in this range'),active.length,'used'],
       ...(skill?[
-        [l('有候选使用证据','With candidate evidence'),items.filter(item=>item.candidates>0).length,'candidate'],
-        [l('当前范围内未观察到使用','No observed use in range'),initial.filter(item=>!item.count&&!item.candidates).length,'unused']
+        [l('有文件读取','With file reads'),items.filter(item=>item.reads>0).length,'reads'],
+        [l('有候选线索','With candidate evidence'),items.filter(item=>item.candidates>0).length,'candidate']
       ]:[
         [l('有失败或拒绝的服务','Servers with failures or declines'),items.filter(item=>item.failure>0).length,'failed']
       ])
@@ -496,8 +571,14 @@
       ...(skill?[['version',l('按版本更新时间排序','Sort by version changed')]]:[['fail',l('按失败次数排序','Sort by failures')],['duration',l('按平均耗时排序','Sort by average duration')]])
     ],state.studioOrder,value=>studioFilter('studioOrder',value)));
     if(skill){
+      bar.classList.add('studio-skill-toolbar');
       const origins=[...new Set(state.data.skills.map(entry=>entry.origin).filter(Boolean))].sort();
-      bar.append(select(l('作用域','Scope'),[['',l('所有作用域','All scopes')],...['project','user','plugin','admin','system','historical'].map(scope=>[scope,scopeLabel(scope)])],state.scope,
+      const activity=select(l('活动状态','Activity status'),[['',l('所有活动状态','All activity statuses')],
+        ['configured',l('已发现技能','Discovered skills')],['used',l('有调用记录','With invocations')],
+        ['reads',l('有文件读取','With file reads')],['candidate',l('有候选线索','With candidate evidence')],
+        ['unused',l('暂无调用或线索','No invocation or evidence')]],state.usage,value=>studioFilter('usage',value));
+      activity.dataset.studioUsage='';
+      bar.append(activity,select(l('作用域','Scope'),[['',l('所有作用域','All scopes')],...['project','user','plugin','admin','system','historical'].map(scope=>[scope,scopeLabel(scope)])],state.scope,
         value=>studioFilter('scope',value)),
         select(l('来源目录','Source directory'),[['',l('所有目录','All directories')],...origins.map(path=>[path,path])],state.origin,
           value=>studioFilter('origin',value)));
@@ -511,9 +592,12 @@
     const isSkill=state.page==='skills';
     const query=state.search.toLowerCase().trim();
     for(const el of root.querySelectorAll('[data-summary-filter]'))el.setAttribute('aria-pressed',String(el.dataset.summaryFilter===state.usage));
+    const activity=root.querySelector('[data-studio-usage]');
+    if(activity)activity.value=state.usage;
     const rows=studioItems(isSkill).filter(item=>{
       if(state.usage==='configured'&&!(isSkill?item.present:item.configs.length))return false;
       if(state.usage==='used'&&!item.count)return false;
+      if(state.usage==='reads'&&!item.reads)return false;
       if(state.usage==='candidate'&&!item.candidates)return false;
       if(state.usage==='unused'&&(!item.present||item.count||item.candidates))return false;
       if(state.usage==='failed'&&!item.failure)return false;
@@ -535,9 +619,9 @@
       return;
     }
     const columns=isSkill?
-      [l('技能','Skill'),l('作用域','Scope'),l('调用证据','Invocation evidence'),l('最近确认调用','Last confirmed call')]:
+      [l('技能','Skill'),l('作用域','Scope'),l('调用','Invocations'),l('文件读取','File reads'),l('最近调用','Last invocation')]:
       [l('服务','Server'),l('配置状态','Status'),l('调用 / 失败与拒绝','Calls / failures'),l('最近使用','Last used')];
-    const table=node('table',undefined,'studio-table');
+    const table=node('table',undefined,isSkill?'studio-table studio-skill-table':'studio-table');
     const head=node('tr');
     for(const label of columns){const cell=node('th',label);cell.scope='col';head.append(cell);}
     const thead=node('thead');thead.append(head);table.append(thead);
@@ -561,16 +645,30 @@
         if(transports.length)source.append(node('small',transports.join(' · ')));
       }
       const calls=node('td',undefined,'studio-calls');
-      calls.append(node('strong',number(item.count)+(isSkill?' '+l('已确认','confirmed'):'')));
-      if(isSkill&&item.count){
-        const explicit=sum(item.rows.filter(entry=>entry.trigger==='explicit'));
-        const implicit=sum(item.rows.filter(entry=>entry.trigger==='implicit'));
-        calls.append(node('small',triggerLabel('explicit')+' '+number(explicit)+' · '+triggerLabel('implicit')+' '+number(implicit)));
-      }else if(!isSkill&&item.failure){
-        calls.append(node('small',number(item.failure)+' '+l('失败或拒绝','failed or declined'),'studio-failed'));
+      if(isSkill){
+        const tally=node('div',undefined,'studio-tally');
+        tally.append(node('strong',number(item.count)));
+        if(item.candidates)tally.append(node('small',number(item.candidates)+' '+l('条线索','candidates')));
+        calls.append(tally);
+        const flags=node('div',undefined,'studio-trigger-counts');
+        for(const key of ['explicit','implicit','unknown']){
+          const count=sum(item.rows.filter(entry=>entry.trigger===key));
+          if(key==='unknown'&&!count)continue;
+          const label=key==='explicit'?l('主动','User'):key==='implicit'?l('被动','Agent'):l('未知','Unknown');
+          const flag=node('span',label+' '+number(count));flag.dataset.kind=key;
+          flags.append(flag);
+        }
+        calls.append(flags);
+        const reads=node('td',number(item.reads),'studio-read-count'+(item.reads?' has-reads':''));
+        reads.dataset.label=l('读取','Reads');
+        const latest=node('td',item.last?compact(item.last):'—','studio-date');
+        if(item.last){latest.title=date(item.last);latest.append(node('small',new Date(item.last*1000).toLocaleTimeString(locale(),{hour:'2-digit',minute:'2-digit'})));}
+        row.append(title,source,calls,reads,latest);
+      }else{
+        calls.append(node('strong',number(item.count)));
+        if(item.failure)calls.append(node('small',number(item.failure)+' '+l('失败或拒绝','failed or declined'),'studio-failed'));
+        row.append(title,source,calls,node('td',date(item.last||null),'studio-date'));
       }
-      if(isSkill&&item.candidates)calls.append(node('small',number(item.candidates)+' '+l('条候选证据','candidate records')));
-      row.append(title,source,calls,node('td',date(item.last||null),'studio-date'));
       body.append(row);
     }
     table.append(body);
@@ -659,7 +757,7 @@
     }
     const skill=state.page==='skills';
     const tabs=skill?['overview','content','versions','invocations','evaluations','feedback']:['overview','invocations','errors'];
-    const names={overview:l('概览','Overview'),content:l('内容','Content'),versions:l('版本','Versions'),invocations:l('调用','Invocations'),
+    const names={overview:l('概览','Overview'),content:l('内容','Content'),versions:l('版本','Versions'),invocations:skill?l('活动证据','Activity evidence'):l('调用','Invocations'),
       evaluations:l('评估样本','Evaluation cases'),feedback:l('反馈','Feedback'),errors:l('错误','Errors')};
     const bar=node('nav',undefined,'studio-tabs');bar.setAttribute('aria-label',l('详情视图','Detail views'));
     for(const tab of tabs)bar.append(button(names[tab],()=>{
@@ -677,9 +775,7 @@
       return;
     }
     if(state.tab==='invocations'||state.tab==='errors'){
-      if(skill&&data.groups.some(row=>row.trigger==='candidate'))root.append(node('p',
-        l('候选证据记录了技能文件或脚本的引用，当前证据不足以确认调用。可以打开原会话核对。','Candidate evidence records skill file or script references. Open the source session to verify the evidence.'),'muted'));
-      root.append(activities(names[state.tab],data.activity,true));return;
+      root.append(activities(names[state.tab],data.activity,true,skill));return;
     }
     if(state.tab==='evaluations'){
       if(evaluationPanel?.item!==item || evaluationPanel?.language!==language){
@@ -694,7 +790,7 @@
     }
     const rows=data.groups;
     const grid=node('div',undefined,'insight-grid');
-    grid.append(trend(l('调用趋势','Usage trend'),skill?'skill':'mcp',data.days,studioScope()));
+    grid.append(trend(skill?l('调用趋势','Invocation trend'):l('调用趋势','Usage trend'),skill?'skill':'mcp',data.days,studioScope()));
     if(skill){
       grid.append(distribution(rows.filter(confirmed)));
     }else{
@@ -705,7 +801,7 @@
         node('p',[['success',success],['failure',failed],['unknown',unknown]].map(([key,count])=>outcomeLabel(key)+' '+number(count)).join(' · ')),
         node('p',l('敏感参数和返回内容留在原始会话。','Sensitive parameters and results stay in the original session.'),'muted')));
     }
-    root.append(grid,activities(l('调用记录','Invocation records'),data.activity,true));
+    root.append(grid,activities(skill?l('活动证据','Activity evidence'):l('调用记录','Invocation records'),data.activity,true,skill));
     if(!skill&&!item.tool)root.append(rating(l('工具排行','Top tools'),sorted(groups(rows,row=>row.server+' / '+row.name)),'tool',row=>openStudio('mcp',row)));
     if(data.correlations?.length){
       const box=sectionBox(l('同轮共同出现','Co-occurrence within turns'),
@@ -793,6 +889,8 @@
   function render(){
     if(state.page==='sessions')return;
     root.replaceChildren();
+    root.classList.toggle('insights-overview',state.page==='overview');
+    root.classList.toggle('insights-skills',state.page==='skills');
     const title={overview:l('执行分析','Agent Insights'),skills:l('Skills 中心','Skills Studio'),mcp:l('MCP 中心','MCP Studio'),feedback:l('反馈','Feedback'),evaluations:l('评估集','Evaluations')}[state.page];
     const item=state.selection;
     const heading=node('div',undefined,'insight-heading');

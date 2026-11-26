@@ -127,7 +127,17 @@ const en = {
   "外部工具":"External tool",
   "外部调用信息以日志为准":"External activity shown here is limited to what the tool recorded.",
   "全部记录":"All records",
-  "Skills 调用":"Skill invoked",
+  "Skills 调用":"Skill invocations",
+  "Skills 读取":"Skill reads",
+  "已确认激活":"Activation confirmed",
+  "已读取技能文件":"Skill file read",
+  "引用技能脚本":"Skill script referenced",
+  "原生 Skill 请求未确认":"Native Skill request unconfirmed",
+  "原生 Skill 请求失败或被拒绝":"Native Skill request failed or was declined",
+  "含缺少轮次 ID 的调用":"Includes invocations without a turn ID",
+  "用户主动指定":"User requested the skill",
+  "AI 被动调用":"Agent triggered the skill",
+  "读取计为被动调用":"Read counted as passive invocation",
   "技能文件引用":"Skill file referenced",
   "实际命令":"Recorded command",
   "提交给工具的脚本":"Script sent to tool",
@@ -235,7 +245,7 @@ function applyLanguage(){
 }
 const $ = id => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
-let localSessions = [], localSteps = [], localKey = null;
+let localSessions = [], localSteps = [], localKey = null, localSkillStats = null;
 let localUsage=null, localModel=null;
 let sessionsLoaded=false;
 let loading = false, refreshing = false, eventCount = null, lastUpdate = null, listTick = 0, selection = 0;
@@ -358,18 +368,14 @@ function objectArgs(raw){
   } catch { return {}; }
 }
 function labelStep(step){
-  const args=objectArgs(step.args);
   const namespace=step.namespace??'';
   const tool=step.tool??'';
   const mcp=/^mcp__([^_].*?)(?:__(.+))?$/.exec(tool);
   const server=step.server || mcp?.[1] || (namespace.startsWith('mcp__')?namespace.slice(5):'');
   if(server)return {category:'mcp',title:server+' / '+(mcp?.[2]??tool),server};
-  if(tool.toLowerCase()==='skill')return {category:'skill',title:args.skill??args.name??tool,explicit:true};
-  const refs=[...new Set(
-    [step.path,step.command,step.script].filter(Boolean).flatMap(value=>
-      [...String(value).matchAll(/(?:^|[~/.])skills[\/]+([^\/\s"'`]+)\/SKILL\.md\b/g)].map(match=>match[1]))
-  )];
-  if(refs.length)return {category:'skill',title:refs.join(' · '),explicit:false};
+  if(step.skillEvidence?.length&&step.kind!=='消息'){
+    return {category:'skill',title:[...new Set(step.skillEvidence.map(entry=>entry.name))].join(' · ')};
+  }
   if(step.diagnostic)return {category:'model',title:eventName(step)[language==='en'?1:0]};
   if(step.kind==='事件')return {category:'event',title:eventName(step)[language==='en'?1:0]};
   if(step.kind==='消息')return {category:'message',title:step.title};
@@ -399,26 +405,37 @@ function eventName(step){
   const label=[step.itemType,step.title].find(key=>Object.hasOwn(eventLabels,key));
   return label ? eventLabels[label] : [step.title,step.title];
 }
-const filters=[['activity','执行轨迹'],['tool','工具'],['skill','Skills'],['mcp','MCP'],['request','请求'],['model','模型和轮次'],['event','事件'],['message','消息'],['all','全部记录']];
+const skillLabel=item=>({
+  user_request:'用户主动指定',user_selection:'用户主动指定',codex_initial_request:'用户主动指定',selected_instructions:'已确认激活',
+  native_skill_success:item.trigger==='implicit'?'AI 被动调用':'已确认激活',codex_native_skill:'AI 被动调用',skill_file_read:item.invocation?'读取计为被动调用':'已读取技能文件',
+  skill_file_reference:'技能文件引用',skill_script_reference:'引用技能脚本',native_skill_attempt:'原生 Skill 请求未确认',
+  native_skill_failed:'原生 Skill 请求失败或被拒绝'
+})[item.proof];
+const matchesSkillFilter=(step,category)=>
+  step.skillEvidence?.some(entry=>entry.activity===category.slice('skill-'.length) ||
+    (category==='skill-activation' && entry.invocation));
+const filters=[['activity','执行轨迹'],['tool','工具'],['skill-activation','Skills 调用'],['skill-read','Skills 读取'],['mcp','MCP'],['request','请求'],['model','模型和轮次'],['event','事件'],['message','消息'],['all','全部记录']];
 const isActivity = (step,type) => type!=='event' && (type!=='model' || ['失败','已中止'].includes(step.state));
 function renderFilters(steps){
   const bar=$('activity-filter');
   bar.hidden=Boolean(importedChat());
   if(bar.hidden)return;
-  const counts={activity:0,all:steps.length};
+  const counts={activity:0,all:steps.length,'skill-activation':localSkillStats?.confirmed??0,'skill-read':localSkillStats?.reads??0};
   for(const step of steps){
     const type=labelStep(step).category;
     counts[type]=(counts[type]??0)+1;
     if(requestEvidence(step))counts.request=(counts.request??0)+1;
     if(isActivity(step,type))counts.activity++;
   }
-  const key=JSON.stringify([language,display.category,counts]);
+  const key=JSON.stringify([language,display.category,counts,localSkillStats?.withoutTurn]);
   if(key===bar.dataset.key)return;
   bar.dataset.key=key;
   bar.replaceChildren();
   for(const [category,name] of filters){
     const button=node('button',t(name)+' '+number(counts[category]??0));
     button.setAttribute('aria-pressed',String(display.category===category));
+    if(category==='skill-activation'&&localSkillStats?.withoutTurn)button.title=
+      t('含缺少轮次 ID 的调用')+' '+number(localSkillStats.withoutTurn);
     button.onclick=()=>{display.category=category;display.file=null;render();latestPosition();};
     bar.append(button);
   }
@@ -484,10 +501,13 @@ function details(steps) {
     const event=eventName(step);
     pane.append(node('p',event[language==='en'?3:2]??t('没有可用的事件说明'),'event-description'));
     pane.append(node('code',[step.title,step.itemType].filter(Boolean).join(' / ')));
-  } else if(info.category==='skill'){
-    pane.append(node('p',t(info.explicit?'Skills 调用':'技能文件引用')+' · '+info.title,'tool-name'));
   } else if(info.server){
     pane.append(node('p',t('MCP 服务')+' · '+info.server,'tool-name'));
+  }
+  for(const item of step.skillEvidence??[]){
+    const proof=node('p',t(skillLabel(item))+' · '+item.name,'tool-name session-skill-evidence');
+    if(item.path)proof.title=item.path;
+    pane.append(proof);
   }
   const actions=node('div',undefined,'actions');
   if(step.state==='失败') {
@@ -555,7 +575,7 @@ let detailKey='';
 function visibleSteps(steps){
   return steps.filter(step=>{
     const category=labelStep(step).category;
-    return (importedChat() || display.category==='all' || (display.category==='activity' && isActivity(step,category)) || (display.category==='request' && requestEvidence(step)) || category===display.category);
+    return (importedChat() || display.category==='all' || (display.category==='activity' && isActivity(step,category)) || (display.category==='request' && requestEvidence(step)) || (display.category.startsWith('skill-')&&matchesSkillFilter(step,display.category)) || category===display.category);
   }).filter(step=>(!display.failed || ['失败','已中止'].includes(step.state)) && (!display.file || ((step.round??1)===display.file.round && stepPaths(step).includes(display.file.path))));
 }
 function render() {
@@ -611,9 +631,11 @@ function render() {
         const info=labelStep(step);
         const headline=node('strong',t(info.title??'未知记录'));
         if(info.category==='tool' && (step.command || step.script))headline.className='code-preview';
-        const type=info.category==='skill'?'Skills':info.category==='mcp'?'MCP':info.category==='model'?t('模型和轮次'):info.external?t('外部工具'):stepKind(step);
-        label.append(headline,node('small',[type,step.child?t('子会话'):null,step.tool && (step.command || step.script)?step.tool:null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
-        e.append(node('span',type[0],'icon '+info.category),label,node('span',t(step.state),'state '+stateClass));
+        const proofLabels=[...new Set((step.skillEvidence??[]).map(entry=>t(skillLabel(entry))))];
+        const type=proofLabels[0]??(info.category==='mcp'?'MCP':info.category==='model'?t('模型和轮次'):info.external?t('外部工具'):stepKind(step));
+        label.append(headline,node('small',[...(proofLabels.length?proofLabels:[type]),step.child?t('子会话'):null,
+          step.tool && (step.command || step.script)?step.tool:null,readableTime(step.time,true)].filter(Boolean).join(' · ')));
+        e.append(node('span',proofLabels.length?'S':type[0],'icon '+(proofLabels.length?'skill':info.category)),label,node('span',t(step.state),'state '+stateClass));
         e.setAttribute('aria-pressed',String(step.id===display.selected));
         group.append(e);
       }
@@ -650,14 +672,14 @@ $('timeline').addEventListener('scroll',()=>{if(!importedChat()&&atTop()&&displa
 async function selectLocal(key) {
   const generation=++selection;
   localKey=key;
-  localSteps=[];localUsage=null;localModel=null;
+  localSteps=[];localUsage=null;localModel=null;localSkillStats=null;
   eventCount=null;lastUpdate=null;loading=true;
   Object.assign(display,{selected:null,file:null,failed:false,category:"activity",unseen:0});
   render();
   try {
     const session=await invoke('read_session',{key});
     if(selection!==generation)return;
-    localSteps=session.steps;eventCount=session.eventCount;localUsage=session.usage;localModel=session.model;
+    localSteps=session.steps;eventCount=session.eventCount;localUsage=session.usage;localModel=session.model;localSkillStats=session.skills;
     render();
     latestPosition();
   } catch(error) {
@@ -736,11 +758,11 @@ async function refreshLocal(){
     if(key && !importedChat()) {
       const session=await invoke('read_session',{key});
       if(selection!==generation)return;
-      if(session.eventCount!==eventCount || JSON.stringify(session.steps)!==JSON.stringify(localSteps)){
+      if(session.eventCount!==eventCount || JSON.stringify(session.steps)!==JSON.stringify(localSteps) || JSON.stringify(session.skills)!==JSON.stringify(localSkillStats)){
         const follow=atTop();
         const anchor=follow?null:timelineAnchor();
         const added=Math.max(0,visibleSteps(session.steps).length-visibleSteps(localSteps).length);
-        eventCount=session.eventCount;localSteps=session.steps;localUsage=session.usage;localModel=session.model;lastUpdate=new Date();
+        eventCount=session.eventCount;localSteps=session.steps;localUsage=session.usage;localModel=session.model;localSkillStats=session.skills;lastUpdate=new Date();
         if(!follow)display.unseen+=added;
         render();
         if(follow)latestPosition();else restoreAnchor(anchor);
